@@ -58,6 +58,8 @@ checks_json="$run_dir/checks.json"
 
 python3 - "$ROOT" "$FINDING_ID" "$commands_json" <<'PY'
 import json
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -74,11 +76,50 @@ if finding is None:
     print(f"finding not found: {finding_id}", file=sys.stderr)
     raise SystemExit(1)
 commands = [str(item) for item in (finding.get("expected_checks") or []) if str(item).strip()]
+inventory_path = root / ".deslop" / "inventory.json"
+inventory_commands = []
+if inventory_path.exists():
+    inventory = json.loads(inventory_path.read_text())
+    inventory_commands = [str(item.get("command")) for item in inventory.get("detected_commands", []) if item.get("command")]
 if not commands:
-    inventory_path = root / ".deslop" / "inventory.json"
-    if inventory_path.exists():
-        inventory = json.loads(inventory_path.read_text())
-        commands = [str(item.get("command")) for item in inventory.get("detected_commands", []) if item.get("command")]
+    commands = inventory_commands
+
+def is_pytest_command(command: str) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    return tuple(tokens[:3]) in {("python", "-m", "pytest"), ("python3", "-m", "pytest")} or tuple(tokens[:1]) == ("pytest",)
+
+def pytest_command_available(command: str) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if tuple(tokens[:3]) in {("python", "-m", "pytest"), ("python3", "-m", "pytest")}:
+        probe = tokens[:3] + ["--version"]
+    elif tuple(tokens[:1]) == ("pytest",):
+        probe = ["pytest", "--version"]
+    else:
+        return True
+    try:
+        result = subprocess.run(
+            ["bash", "-lc", shlex.join(probe)],
+            cwd=root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0
+
+py_compile_fallback = next((command for command in inventory_commands if " -m py_compile " in f" {command} "), None)
+if commands and py_compile_fallback:
+    commands = [
+        py_compile_fallback if is_pytest_command(command) and not pytest_command_available(command) else command
+        for command in commands
+    ]
 target.write_text(json.dumps(commands, indent=2, sort_keys=True) + "\n")
 PY
 
@@ -116,6 +157,7 @@ SAFE_PREFIXES = (
     ("poetry", "run", "ruff"),
     ("poetry", "run", "mypy"),
     ("pipenv", "run", "pytest"),
+    ("npm", "--prefix"),
     ("npm", "test"),
     ("npm", "run"),
     ("pnpm", "test"),
@@ -128,8 +170,6 @@ SAFE_PREFIXES = (
     ("swift", "test"),
     ("git", "diff", "--check"),
     ("git", "status"),
-    ("grep",),
-    ("rg",),
     ("test", "-d"),
     ("test", "-f"),
 )
@@ -169,6 +209,12 @@ def is_safe_check_command(command_text: str) -> bool:
     tokens = strip_env(shlex.split(value))
     if not tokens:
         return False
+    if tokens[:2] in (["npm", "test"], ["pnpm", "test"], ["yarn", "test"]):
+        return len(tokens) == 2
+    if tokens[:2] in (["npm", "run"], ["pnpm", "run"], ["yarn", "run"]):
+        return len(tokens) == 3 and bool(tokens[2].strip())
+    if tokens[:2] in (["npm", "--prefix"], ["pnpm", "--dir"]):
+        return len(tokens) == 5 and tokens[3] == "run" and bool(tokens[2].strip()) and bool(tokens[4].strip())
     for prefix in SAFE_PREFIXES:
         if tuple(tokens[: len(prefix)]) == prefix:
             return True

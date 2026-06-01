@@ -200,9 +200,11 @@ cat > "$prompt" <<EOF
 You are running as the selected Ultimate De-Slop fixer role. Do not delegate to another fixer, load skill files recursively, or run deslop-loop.sh, deslop-fix.sh, or any nested de-slop harness command from inside this fixer session.
 
 Fix exactly one finding. Do not fix unrelated issues. Do not clean up while you are here. Preserve behavior unless explicitly required. Prefer deleting/moving complexity to adding abstraction. Add or update tests when useful. Run the expected checks when practical.
+Perform the edit in the working tree before reporting success. Do not merely describe the fix. Before returning, inspect git status or git diff and make sure the files you list in changed_files actually changed.
 
 Return exactly one JSON object, no markdown fences and no prose, with these keys:
 finding_id, summary, changed_files, checks_run, risks, status.
+Valid status values are only "fixed" and "blocked". Do not return "fixing", "in_progress", or any other status. If you cannot make the edit, return status "blocked" and leave changed_files empty.
 
 Read AGENTS.md files that apply, if any. Read \`.deslop/index.md\`. Obey soft budgets from \`.deslop/config.json\` for touched files and changed lines.
 

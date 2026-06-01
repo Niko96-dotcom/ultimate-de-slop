@@ -188,7 +188,7 @@ def codex_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand
 def claude_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand:
     permission = args.permission_mode
     if permission is None:
-        permission = "plan" if is_read_only(args.sandbox, args.kind) else "acceptEdits"
+        permission = "default" if is_read_only(args.sandbox, args.kind) else "acceptEdits"
     schema_text = args.schema.read_text()
     command = [
         "claude",
@@ -238,7 +238,9 @@ def cursor_adapter(args: argparse.Namespace, model: str | None) -> AdapterComman
     ]
     if mode:
         command.extend(["--mode", mode])
-    if args.sandbox == "danger-full-access":
+    if not is_read_only(args.sandbox, args.kind):
+        command.append("--force")
+    elif args.sandbox == "danger-full-access":
         command.append("--force")
     add_model(command, model)
     command.append(prompt_file_message(args.prompt))
@@ -255,6 +257,8 @@ def pi_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand:
         "--print",
         "--mode",
         "json",
+        "--thinking",
+        "off",
         "--skill",
         str(skill_root()),
         "--tools",
@@ -275,7 +279,7 @@ def commandcode_adapter(args: argparse.Namespace, model: str | None) -> AdapterC
     else:
         permission = permission or ("auto-accept" if args.sandbox == "workspace-write" else "standard")
         command.extend(["--permission-mode", permission])
-        if args.sandbox == "danger-full-access" and os.environ.get("DESLOP_COMMANDCODE_YOLO") == "1":
+        if args.sandbox in {"workspace-write", "danger-full-access"} or os.environ.get("DESLOP_COMMANDCODE_YOLO") == "1":
             command.append("--yolo")
     for directory in args.add_dir:
         command.extend(["--add-dir", directory])
@@ -333,10 +337,11 @@ def build_adapter(args: argparse.Namespace) -> AdapterCommand:
     return ADAPTERS[harness](args, model)
 
 
-def extract_opencode_text(raw_output: Path) -> str:
+def extract_event_text(raw_output: Path) -> str:
     if not raw_output.exists():
         return ""
-    text_parts: list[str] = []
+    delta_parts: list[str] = []
+    complete_messages: list[str] = []
     for line in raw_output.read_text(errors="ignore").splitlines():
         try:
             event = json.loads(line)
@@ -346,17 +351,40 @@ def extract_opencode_text(raw_output: Path) -> str:
             continue
         part = event.get("part")
         if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
-            text_parts.append(part["text"])
+            delta_parts.append(part["text"])
         elif event.get("type") == "text" and isinstance(event.get("text"), str):
-            text_parts.append(event["text"])
-    return "".join(text_parts)
+            delta_parts.append(event["text"])
+
+        result = event.get("result")
+        if isinstance(result, str) and event.get("type") == "result":
+            complete_messages.append(result)
+
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            text = "".join(
+                item.get("text", "")
+                for item in message.get("content", [])
+                if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+            )
+            if text and event.get("type") in {"message_end", "turn_end"}:
+                complete_messages.append(text)
+
+        assistant_event = event.get("assistantMessageEvent")
+        if isinstance(assistant_event, dict) and assistant_event.get("type") == "text_delta":
+            delta = assistant_event.get("delta")
+            if isinstance(delta, str):
+                delta_parts.append(delta)
+
+    if complete_messages:
+        return complete_messages[-1]
+    return "".join(delta_parts)
 
 
 def copy_raw_to_last_message(raw_output: Path, last_message: Path, harness: str) -> None:
     if last_message.exists() and last_message.stat().st_size > 0:
         return
-    if harness == "opencode":
-        text = extract_opencode_text(raw_output)
+    if harness in {"opencode", "pi", "commandcode", "cursor", "claude"}:
+        text = extract_event_text(raw_output)
         if text:
             write_text(last_message, text)
             return

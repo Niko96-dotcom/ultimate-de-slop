@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -156,6 +157,85 @@ class HarnessTests(unittest.TestCase):
             scanned_paths.update(inventory["detected_tooling_files"])
             self.assertEqual(inventory["candidate_file_count"], 1)
             self.assertEqual(scanned_paths, {"sample.py"})
+
+    def test_inventory_detects_py_compile_for_python_without_test_tooling(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            (root / "pkg").mkdir()
+            (root / "pkg" / "module.py").write_text("value = 2\n")
+            run(["git", "add", "."], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+
+            result = run([str(SCRIPT_DIR / "deslop-inventory.py"), "--write"], cwd=root)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            inventory = json.loads((root / ".deslop" / "inventory.json").read_text())
+            commands = {item["name"]: item["command"] for item in inventory["detected_commands"]}
+            self.assertEqual(commands["py_compile"], "python3 -m py_compile pkg/module.py sample.py")
+
+    def test_inventory_uses_safe_npm_prefix_for_nested_package_scripts(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            package_dir = root / "samples" / "app"
+            package_dir.mkdir(parents=True)
+            (package_dir / "package.json").write_text(
+                json.dumps({"scripts": {"test": "node --test"}}) + "\n"
+            )
+            run(["git", "add", "."], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+
+            result = run([str(SCRIPT_DIR / "deslop-inventory.py"), "--write"], cwd=root)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            inventory = json.loads((root / ".deslop" / "inventory.json").read_text())
+            commands = {item["name"]: item["command"] for item in inventory["detected_commands"]}
+            self.assertEqual(commands["npm test"], "npm --prefix samples/app run test")
+
+    def test_unavailable_pytest_expected_check_falls_back_to_py_compile(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            (root / ".deslop" / "inventory.json").write_text(
+                json.dumps(
+                    {
+                        "detected_commands": [
+                            {"name": "pytest", "command": "python3 -m pytest", "source": "python"},
+                            {"name": "py_compile", "command": "python3 -m py_compile sample.py", "source": "python"},
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            write_findings(
+                root,
+                minimal_finding("DSL-000001", expected_checks=["python3 -m pytest"]),
+            )
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "python3",
+                f"""#!/usr/bin/env bash
+if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
+  echo "No module named pytest" >&2
+  exit 1
+fi
+exec {shlex.quote(sys.executable)} "$@"
+""",
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-run-checks.sh"), "DSL-000001"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            checks_path = sorted((root / ".deslop" / "runs").glob("*-checks-DSL-000001/checks.json"))[-1]
+            checks = json.loads(checks_path.read_text())
+            self.assertEqual(checks["status"], "passed")
+            self.assertEqual(checks["results"][0]["command"], "python3 -m py_compile sample.py")
 
     def test_unsafe_expected_checks_stay_blocked(self) -> None:
         tempdir, root = self.make_repo()
@@ -390,6 +470,260 @@ print(json.dumps({{"type": "step_finish", "part": {{"type": "step-finish"}}}}))
             self.assertIn('"type": "text"', raw.read_text())
             self.assertEqual(json.loads(last.read_text()), payload)
 
+    def test_agent_runner_extracts_pi_turn_end_text_to_last_message(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            prompt = root / "prompt.txt"
+            prompt.write_text("Return JSON.\n")
+            raw = root / "raw.txt"
+            last = root / "last.txt"
+            runner_json = root / "runner.json"
+            payload = {
+                "repo_summary": "pi event-stream review",
+                "review_wave_id": "wave-pi",
+                "partitions_reviewed": ["root"],
+                "findings": [],
+            }
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            fake_pi = fake_bin / "pi"
+            fake_pi.write_text(
+                f"""#!/usr/bin/env python3
+import json
+
+print(json.dumps({{"type": "message_update", "assistantMessageEvent": {{"type": "text_delta", "delta": "noise"}}}}))
+print(json.dumps({{"type": "turn_end", "message": {{"role": "assistant", "content": [{{"type": "thinking", "thinking": "ignored"}}, {{"type": "text", "text": {json.dumps(json.dumps(payload))}}}]}}}}))
+"""
+            )
+            fake_pi.chmod(0o755)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-agent-runner.py"),
+                    "--root",
+                    str(root),
+                    "--prompt",
+                    str(prompt),
+                    "--raw-output",
+                    str(raw),
+                    "--last-message",
+                    str(last),
+                    "--runner-json",
+                    str(runner_json),
+                    "--schema",
+                    str(SKILL_DIR / "references" / "review.schema.json"),
+                    "--sandbox",
+                    "read-only",
+                    "--kind",
+                    "review",
+                ],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "pi"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('"turn_end"', raw.read_text())
+            self.assertEqual(json.loads(last.read_text()), payload)
+            diagnostics = json.loads(runner_json.read_text())
+            self.assertIn("--thinking", diagnostics["command"])
+            thinking_index = diagnostics["command"].index("--thinking")
+            self.assertEqual(diagnostics["command"][thinking_index + 1], "off")
+
+    def test_agent_runner_extracts_cursor_result_to_last_message(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            prompt = root / "prompt.txt"
+            prompt.write_text("Return JSON.\n")
+            raw = root / "raw.txt"
+            last = root / "last.txt"
+            runner_json = root / "runner.json"
+            payload = {
+                "repo_summary": "cursor wrapped review",
+                "review_wave_id": "wave-cursor",
+                "partitions_reviewed": ["root"],
+                "findings": [],
+            }
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "cursor-agent",
+                f"""#!/usr/bin/env python3
+import json
+
+print(json.dumps({{
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "result": {json.dumps(json.dumps(payload))},
+}}))
+""",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-agent-runner.py"),
+                    "--root",
+                    str(root),
+                    "--prompt",
+                    str(prompt),
+                    "--raw-output",
+                    str(raw),
+                    "--last-message",
+                    str(last),
+                    "--runner-json",
+                    str(runner_json),
+                    "--schema",
+                    str(SKILL_DIR / "references" / "review.schema.json"),
+                    "--sandbox",
+                    "read-only",
+                    "--kind",
+                    "review",
+                ],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "cursor"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('"type": "result"', raw.read_text())
+            self.assertEqual(json.loads(last.read_text()), payload)
+
+    def test_agent_runner_extracts_claude_result_to_last_message(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            prompt = root / "prompt.txt"
+            prompt.write_text("Return JSON.\n")
+            raw = root / "raw.txt"
+            last = root / "last.txt"
+            runner_json = root / "runner.json"
+            payload = {
+                "repo_summary": "claude wrapped review",
+                "review_wave_id": "wave-claude",
+                "partitions_reviewed": ["root"],
+                "findings": [],
+            }
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "claude",
+                f"""#!/usr/bin/env python3
+import json
+
+print(json.dumps({{
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "result": {json.dumps(f"Here is the review JSON.\n```json\n{json.dumps(payload)}\n```")},
+    "modelUsage": {{"claude-haiku-4-5": {{"inputTokens": 1, "outputTokens": 1}}}},
+}}))
+""",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-agent-runner.py"),
+                    "--root",
+                    str(root),
+                    "--prompt",
+                    str(prompt),
+                    "--raw-output",
+                    str(raw),
+                    "--last-message",
+                    str(last),
+                    "--runner-json",
+                    str(runner_json),
+                    "--schema",
+                    str(SKILL_DIR / "references" / "review.schema.json"),
+                    "--sandbox",
+                    "read-only",
+                    "--kind",
+                    "review",
+                ],
+                cwd=root,
+                env={
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                    "DESLOP_HARNESS": "claude",
+                    "DESLOP_MODEL": "claude-haiku-4-5",
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('"type": "result"', raw.read_text())
+            self.assertEqual(json.loads(last.read_text().split("```json\n", 1)[1].split("\n```", 1)[0]), payload)
+            diagnostics = json.loads(runner_json.read_text())
+            self.assertEqual(diagnostics["model"], "claude-haiku-4-5")
+            self.assertEqual(diagnostics["permission_mode"], "default")
+            self.assertNotIn("plan", diagnostics["command"])
+
+    def test_agent_runner_enables_write_permissions_for_headless_fixers(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            prompt = root / "prompt.txt"
+            prompt.write_text("Return JSON.\n")
+            raw = root / "raw.txt"
+            last = root / "last.txt"
+            runner_json = root / "runner.json"
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            for cli_name in ("cursor-agent", "commandcode"):
+                write_executable(
+                    fake_bin / cli_name,
+                    """#!/usr/bin/env python3
+import json
+
+payload = {
+    "finding_id": "DSL-000001",
+    "summary": "test",
+    "changed_files": [],
+    "checks_run": [],
+    "risks": [],
+    "status": "fixed",
+}
+print(json.dumps(payload))
+""",
+                )
+
+            for harness, expected_flag in (("cursor", "--force"), ("commandcode", "--yolo")):
+                with self.subTest(harness=harness):
+                    raw.unlink(missing_ok=True)
+                    last.unlink(missing_ok=True)
+                    runner_json.unlink(missing_ok=True)
+
+                    result = run(
+                        [
+                            sys.executable,
+                            str(SCRIPT_DIR / "deslop-agent-runner.py"),
+                            "--root",
+                            str(root),
+                            "--prompt",
+                            str(prompt),
+                            "--raw-output",
+                            str(raw),
+                            "--last-message",
+                            str(last),
+                            "--runner-json",
+                            str(runner_json),
+                            "--schema",
+                            str(SKILL_DIR / "references" / "fix.schema.json"),
+                            "--sandbox",
+                            "workspace-write",
+                            "--kind",
+                            "fix",
+                        ],
+                        cwd=root,
+                        env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": harness},
+                    )
+
+                    self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                    diagnostics = json.loads(runner_json.read_text())
+                    self.assertIn(expected_flag, diagnostics["command"])
+
     def test_agent_runner_records_missing_cli(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
@@ -564,6 +898,56 @@ print('{"nested": "not review output"}')
             review_paths = sorted((root / ".deslop" / "runs").glob("*-review/review.json"))
             self.assertFalse(review_paths)
 
+    def test_review_extraction_repairs_invalid_single_quote_escapes(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "codex",
+                r"""#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+text = r'''prefix
+{
+  "repo_summary": "test",
+  "review_wave_id": "wave-test",
+  "partitions_reviewed": ["root"],
+  "findings": [{
+    "title": "escaped quote",
+    "severity": "P1",
+    "confidence": 0.95,
+    "category": "correctness",
+    "files": ["sample.py"],
+    "evidence": [{"file": "sample.py", "lines": "1", "symbol": "value", "claim": "query = f\'bad\'"}],
+    "why_it_matters": "test",
+    "proposed_fix": "test",
+    "acceptance_criteria": ["test"],
+    "expected_checks": ["python3 -m py_compile sample.py"],
+    "risk": "low",
+    "estimated_effort": "small"
+  }]
+}
+suffix'''
+if "--output-last-message" in sys.argv:
+    Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text("not json\n")
+print(text)
+""",
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-review.sh")],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            review_paths = sorted((root / ".deslop" / "runs").glob("*-review/review.json"))
+            review = json.loads(review_paths[-1].read_text())
+            self.assertIn("f'bad'", review["findings"][0]["evidence"][0]["claim"])
+
     def test_arbitrate_normalizes_common_model_review_variants(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
@@ -612,6 +996,178 @@ print('{"nested": "not review output"}')
             self.assertEqual(finding["expected_checks"], ["python -m py_compile sample.py"])
             self.assertEqual(finding["evidence"][0]["file"], "sample.py")
             self.assertIn("broken only contains pass", finding["evidence"][0]["claim"])
+
+    def test_arbitrate_scrubs_non_allowlisted_expected_checks(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("def broken():\n    pass\n")
+            run(["git", "add", "sample.py"], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            review = {
+                "repo_summary": "test repo",
+                "review_wave_id": "wave-test",
+                "partitions_reviewed": ["root"],
+                "findings": [
+                    {
+                        "title": "unsafe check command",
+                        "severity": "P1",
+                        "confidence": 0.95,
+                        "category": "correctness",
+                        "files": ["sample.py"],
+                        "evidence": [{"file": "sample.py", "claim": "broken only contains pass"}],
+                        "why_it_matters": "callers receive None instead of a useful value",
+                        "proposed_fix": "return a deterministic value from the function",
+                        "acceptance_criteria": ["broken returns a useful value"],
+                        "expected_checks": [
+                            "python3 -c \"open('sentinel', 'w').write('unsafe')\"",
+                            "python3 -m py_compile sample.py",
+                        ],
+                        "risk": "low",
+                        "estimated_effort": "small",
+                    }
+                ],
+            }
+            review_path = root / "review.json"
+            review_path.write_text(json.dumps(review) + "\n")
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-arbitrate.py"), str(review_path), "--json"],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            outcome = json.loads(result.stdout)
+            finding = read_finding(root, outcome["accepted"][0])
+            self.assertEqual(finding["expected_checks"], ["python3 -m py_compile sample.py"])
+            self.assertIn("Removed non-allowlisted expected_checks", finding["expected_checks_explanation"])
+
+    def test_arbitrate_scrubs_ambiguous_grep_expected_checks(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("def broken():\n    pass\n")
+            run(["git", "add", "sample.py"], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            review = {
+                "repo_summary": "test repo",
+                "review_wave_id": "wave-test",
+                "partitions_reviewed": ["root"],
+                "findings": [
+                    {
+                        "title": "ambiguous grep check",
+                        "severity": "P1",
+                        "confidence": 0.95,
+                        "category": "correctness",
+                        "files": ["sample.py"],
+                        "evidence": [{"file": "sample.py", "lines": "2", "claim": "broken only contains pass"}],
+                        "why_it_matters": "callers receive None instead of a useful value",
+                        "proposed_fix": "return a deterministic value from the function",
+                        "acceptance_criteria": ["broken returns a useful value"],
+                        "expected_checks": ["grep -r \"pass\" sample.py"],
+                        "risk": "low",
+                        "estimated_effort": "small",
+                    }
+                ],
+            }
+            review_path = root / "review.json"
+            review_path.write_text(json.dumps(review) + "\n")
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-arbitrate.py"), str(review_path), "--json"],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            outcome = json.loads(result.stdout)
+            finding = read_finding(root, outcome["accepted"][0])
+            self.assertEqual(finding["expected_checks"], [])
+            self.assertIn("Removed non-allowlisted expected_checks", finding["no_expected_checks_reason"])
+
+    def test_arbitrate_scrubs_npm_test_with_extra_path_args(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "package.json").write_text(json.dumps({"scripts": {"test": "node --test"}}) + "\n")
+            (root / "sample.js").write_text("export function broken() { return null; }\n")
+            run(["git", "add", "."], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            review = {
+                "repo_summary": "test repo",
+                "review_wave_id": "wave-test",
+                "partitions_reviewed": ["root"],
+                "findings": [
+                    {
+                        "title": "bad targeted package check",
+                        "severity": "P1",
+                        "confidence": 0.95,
+                        "category": "correctness",
+                        "files": ["sample.js"],
+                        "evidence": [{"file": "sample.js", "lines": "1", "claim": "broken returns null"}],
+                        "why_it_matters": "callers receive no useful value",
+                        "proposed_fix": "return a useful value",
+                        "acceptance_criteria": ["broken returns a useful value"],
+                        "expected_checks": ["npm test sample.js", "npm run test"],
+                        "risk": "low",
+                        "estimated_effort": "small",
+                    }
+                ],
+            }
+            review_path = root / "review.json"
+            review_path.write_text(json.dumps(review) + "\n")
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-arbitrate.py"), str(review_path), "--json"],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            outcome = json.loads(result.stdout)
+            finding = read_finding(root, outcome["accepted"][0])
+            self.assertEqual(finding["expected_checks"], ["npm run test"])
+            self.assertIn("Removed non-allowlisted expected_checks", finding["expected_checks_explanation"])
+
+    def test_arbitrate_rejects_speculative_filename_only_evidence(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "hardcoded_credentials.py").write_text("API_KEY = 'test'\n")
+            run(["git", "add", "hardcoded_credentials.py"], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            review = {
+                "repo_summary": "test repo",
+                "review_wave_id": "wave-test",
+                "partitions_reviewed": ["root"],
+                "findings": [
+                    {
+                        "title": "hardcoded credentials likely embedded",
+                        "severity": "P0",
+                        "confidence": 0.95,
+                        "category": "security/boundaries",
+                        "files": ["hardcoded_credentials.py"],
+                        "evidence": [
+                            {
+                                "file": "hardcoded_credentials.py",
+                                "claim": "File is flagged as a hardcoded credential vulnerability candidate; likely contains literal secrets.",
+                            }
+                        ],
+                        "why_it_matters": "hardcoded credentials leak access",
+                        "proposed_fix": "remove embedded secrets and load from environment variables",
+                        "acceptance_criteria": ["no literal secrets remain"],
+                        "expected_checks": ["python3 -m py_compile hardcoded_credentials.py"],
+                        "risk": "high",
+                        "estimated_effort": "small",
+                    }
+                ],
+            }
+            review_path = root / "review.json"
+            review_path.write_text(json.dumps(review) + "\n")
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-arbitrate.py"), str(review_path), "--json"],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            outcome = json.loads(result.stdout)
+            self.assertEqual(outcome["accepted"], [])
+            self.assertIn("evidence is speculative", outcome["rejected"][0]["reasons"][0])
 
     def test_codex_runner_shim_keeps_codex_exec_contract(self) -> None:
         tempdir, root = self.make_repo()

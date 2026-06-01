@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -32,8 +33,54 @@ DEFAULT_CONFIG = {
 FINAL_STATES = {"verified", "blocked", "false_positive", "needs_human"}
 NON_OPEN_STATES = {"verified", "rejected", "false_positive"}
 STYLE_CATEGORIES = {"style", "format", "formatting", "whitespace", "naming", "comment", "comments", "cosmetic", "nit"}
+SPECULATIVE_EVIDENCE_WORDS = {
+    "appears",
+    "candidate",
+    "flagged",
+    "likely",
+    "probably",
+    "suggests",
+}
 EFFORT_ALIASES = {"s": "small", "m": "medium", "l": "large"}
 CONFIDENCE_ALIASES = {"high": 0.95, "medium": 0.80, "low": 0.50}
+SAFE_CHECK_PREFIXES = (
+    ("python", "-m", "pytest"),
+    ("python3", "-m", "pytest"),
+    ("python", "-m", "unittest"),
+    ("python3", "-m", "unittest"),
+    ("python", "-m", "py_compile"),
+    ("python3", "-m", "py_compile"),
+    ("pytest",),
+    ("ruff", "check"),
+    ("mypy",),
+    ("lint-imports",),
+    ("import-linter",),
+    ("uv", "run", "pytest"),
+    ("uv", "run", "ruff"),
+    ("uv", "run", "mypy"),
+    ("uv", "run", "lint-imports"),
+    ("uv", "run", "import-linter"),
+    ("poetry", "run", "pytest"),
+    ("poetry", "run", "ruff"),
+    ("poetry", "run", "mypy"),
+    ("pipenv", "run", "pytest"),
+    ("npm", "--prefix"),
+    ("npm", "test"),
+    ("npm", "run"),
+    ("pnpm", "test"),
+    ("pnpm", "run"),
+    ("yarn", "test"),
+    ("yarn", "run"),
+    ("bun", "test"),
+    ("cargo", "test"),
+    ("go", "test"),
+    ("swift", "test"),
+    ("git", "diff", "--check"),
+    ("git", "status"),
+    ("test", "-d"),
+    ("test", "-f"),
+)
+SAFE_CHECK_ENV = {"CI", "NODE_ENV", "PYTHONPATH", "UV_CACHE_DIR"}
 
 
 @dataclass(frozen=True)
@@ -127,6 +174,64 @@ def as_string_list(value: Any) -> list[str]:
     return []
 
 
+def has_unsafe_check_syntax(command_text: str) -> bool:
+    if "\n" in command_text or "\r" in command_text:
+        return True
+    for pattern in ("$(", "${", "`"):
+        if pattern in command_text:
+            return True
+    try:
+        tokens = shlex.split(command_text)
+    except ValueError:
+        return True
+    return any(token in {";", "|", "||", "&", "&&", ">", ">>", "<", "<<", "|&"} for token in tokens)
+
+
+def strip_safe_env(tokens: list[str]) -> list[str]:
+    rest = list(tokens)
+    while rest:
+        head = rest[0]
+        if "=" not in head or head.startswith("-"):
+            break
+        name, _value = head.split("=", 1)
+        if not name.replace("_", "").isalnum() or name not in SAFE_CHECK_ENV:
+            break
+        rest.pop(0)
+    return rest
+
+
+def is_safe_expected_check(command_text: str) -> bool:
+    value = command_text.strip()
+    if not value or has_unsafe_check_syntax(value):
+        return False
+    tokens = strip_safe_env(shlex.split(value))
+    if not tokens:
+        return False
+    if tokens[:2] in (["npm", "test"], ["pnpm", "test"], ["yarn", "test"]):
+        return len(tokens) == 2
+    if tokens[:2] in (["npm", "run"], ["pnpm", "run"], ["yarn", "run"]):
+        return len(tokens) == 3 and bool(tokens[2].strip())
+    if tokens[:2] in (["npm", "--prefix"], ["pnpm", "--dir"]):
+        return len(tokens) == 5 and tokens[3] == "run" and bool(tokens[2].strip()) and bool(tokens[4].strip())
+    return any(tuple(tokens[: len(prefix)]) == prefix for prefix in SAFE_CHECK_PREFIXES)
+
+
+def scrub_expected_checks(candidate: dict[str, Any]) -> None:
+    checks = candidate.get("expected_checks")
+    if not isinstance(checks, list):
+        return
+    safe_checks = [check for check in checks if is_safe_expected_check(str(check))]
+    if len(safe_checks) == len(checks):
+        return
+    candidate["expected_checks"] = safe_checks
+    note = "Removed non-allowlisted expected_checks so detected project checks can run safely."
+    existing = str(candidate.get("no_expected_checks_reason") or candidate.get("expected_checks_explanation") or "").strip()
+    if safe_checks:
+        candidate["expected_checks_explanation"] = f"{existing} {note}".strip()
+    else:
+        candidate["no_expected_checks_reason"] = f"{existing} {note}".strip()
+
+
 def render_lines(value: Any) -> str:
     if value is None:
         return ""
@@ -197,6 +302,7 @@ def normalize_candidate(raw: dict[str, Any]) -> dict[str, Any]:
     for key in ("expected_checks_explanation", "no_expected_checks_reason", "checks_explanation"):
         if candidate.get(key) is None:
             candidate[key] = ""
+    scrub_expected_checks(candidate)
     effort = str(candidate.get("estimated_effort") or candidate.get("effort") or "").lower()
     candidate.pop("effort", None)
     candidate["estimated_effort"] = EFFORT_ALIASES.get(effort, effort)
@@ -223,6 +329,22 @@ def finding_key(finding: dict[str, Any]) -> str:
         else:
             claims.append(normalize(evidence))
     return "||".join([category, title, files, "|".join(sorted(claims))])
+
+
+def has_concrete_evidence_item(item: dict[str, Any]) -> bool:
+    raw_claim = str(item.get("claim", ""))
+    claim = normalize(raw_claim)
+    if not item.get("file") or not claim:
+        return False
+    if item.get("lines") or item.get("symbol"):
+        return True
+    words = set(claim.split())
+    if words & SPECULATIVE_EVIDENCE_WORDS:
+        return False
+    if words & {"pass", "return", "import", "execute", "eval", "exec", "pickle", "shell", "password", "secret"}:
+        return True
+    raw_lower = raw_claim.lower()
+    return any(token in raw_lower for token in ("=", "(", ")", ".", " import ", " return ", " pass ", " shell", "sql"))
 
 
 def next_id(findings: list[dict[str, Any]]) -> str:
@@ -267,6 +389,8 @@ def validate_candidate(candidate: dict[str, Any], config: dict[str, Any]) -> lis
                 break
         if not useful_evidence:
             reasons.append("evidence lacks file and claim")
+        elif not any(isinstance(item, dict) and has_concrete_evidence_item(item) for item in evidence):
+            reasons.append("evidence is speculative or lacks concrete code detail")
     if not candidate.get("files"):
         reasons.append("missing files")
     if not str(candidate.get("why_it_matters", "")).strip():

@@ -196,14 +196,19 @@ def detect_package_scripts(root: Path, files: list[FileInfo]) -> list[dict[str, 
             scripts = data.get("scripts", {})
             if not isinstance(scripts, dict):
                 continue
-            prefix = ""
+            prefix: list[str] = []
             if rel.parent != Path("."):
-                prefix = f"cd {shlex.quote(rel.parent.as_posix())} && "
+                prefix = ["--prefix", rel.parent.as_posix()]
             for script in ("test", "lint", "typecheck", "build"):
                 if script in scripts:
-                    add(f"npm {script}", f"{prefix}npm run {script}", info.path)
+                    command = " ".join(["npm", *map(shlex.quote, prefix), "run", shlex.quote(script)])
+                    add(f"npm {script}", command, info.path)
     if any(path in file_paths for path in ("pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini")):
         add("pytest", "python3 -m pytest", "python")
+    python_files = sorted(info.path for info in files if info.extension == ".py")
+    if python_files:
+        quoted = " ".join(shlex.quote(path) for path in python_files[:50])
+        add("py_compile", f"python3 -m py_compile {quoted}", "python")
     if "go.mod" in file_paths:
         add("go test", "go test ./...", "go.mod")
     if "Cargo.toml" in file_paths:

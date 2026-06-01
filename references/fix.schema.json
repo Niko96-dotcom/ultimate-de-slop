@@ -9,7 +9,7 @@
     "changed_files": {"type": "array", "items": {"type": "string"}},
     "checks_run": {"type": "array", "items": {"type": "string"}},
     "risks": {"type": "array", "items": {"type": "string"}},
-    "status": {"type": "string"}
+    "status": {"type": "string", "enum": ["fixed", "blocked"]}
   },
   "additionalProperties": false
 }

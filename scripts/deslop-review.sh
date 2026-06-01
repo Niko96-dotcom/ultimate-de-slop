@@ -18,6 +18,7 @@ fi
 extract_json() {
   python3 - "$1" "$2" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -53,15 +54,24 @@ def scan_balanced(s):
                     break
 
 valid = []
+def parse_candidate(candidate):
+    try:
+        return json.loads(candidate, strict=False)
+    except json.JSONDecodeError:
+        repaired = re.sub(r'\\([^"\\/bfnrtu])', r'\1', candidate)
+        if repaired == candidate:
+            raise
+        return json.loads(repaired, strict=False)
+
 try:
-    parsed = json.loads(text, strict=False)
+    parsed = parse_candidate(text)
     if isinstance(parsed, dict):
         valid.append(parsed)
 except json.JSONDecodeError:
     pass
 for candidate in scan_balanced(text):
     try:
-        parsed = json.loads(candidate, strict=False)
+        parsed = parse_candidate(candidate)
     except json.JSONDecodeError:
         continue
     if isinstance(parsed, dict):
@@ -134,6 +144,7 @@ Use `confidence` as a number from 0.0 to 1.0, not a label such as "high".
 Use `risk` as one of: low, medium, high. Use `estimated_effort` as one of: small, medium, large.
 Use arrays of strings for `files`, `acceptance_criteria`, `expected_checks`, and `dependencies`.
 Each evidence item must be an object with string fields: file, lines, symbol, claim.
+Evidence must be concrete enough for a fixer to act: include exact line ranges or a symbol when possible, and quote the risky code shape in claim. Do not report filename-only or "likely/appears/flagged candidate" findings; they will be rejected by arbitration.
 Expected checks must be simple JSON-safe command strings. Avoid shell redirection, pipes, and nested quotes in expected_checks; if a useful check needs complex quoting, leave expected_checks empty and explain it in no_expected_checks_reason.
 Return ONLY JSON matching the review schema.
 EOF
