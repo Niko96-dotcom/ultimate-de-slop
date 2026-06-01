@@ -46,13 +46,14 @@ if [ -z "$FINDING_ID" ]; then
 fi
 
 extract_json() {
-  python3 - "$1" "$2" <<'PY'
+  python3 - "$1" "$2" "$3" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 source = Path(sys.argv[1])
 target = Path(sys.argv[2])
+expected_finding_id = sys.argv[3]
 text = source.read_text(errors="ignore")
 
 def scan_balanced(s):
@@ -99,11 +100,33 @@ for candidate in scan_balanced(text):
 
 required = {"finding_id", "verdict", "confidence", "evidence", "concerns", "required_follow_up"}
 obj = next((item for item in reversed(valid) if required.issubset(item)), None)
-if obj is None and valid:
-    obj = valid[-1]
 if obj is None:
-    print(f"could not extract JSON object from {source}", file=sys.stderr)
+    if valid:
+        seen = set()
+        for item in valid:
+            seen.update(item.keys())
+        missing = ", ".join(sorted(required - seen))
+        print(f"could not extract verify JSON object from {source}; missing required keys: {missing}", file=sys.stderr)
+    else:
+        print(f"could not extract JSON object from {source}", file=sys.stderr)
     raise SystemExit(1)
+obj["finding_id"] = expected_finding_id
+for key in ("evidence", "concerns", "required_follow_up"):
+    value = obj.get(key)
+    if value is None:
+        obj[key] = []
+    elif isinstance(value, list):
+        obj[key] = [str(item) for item in value if str(item).strip()]
+    elif str(value).strip().lower() in {"none", "n/a", "[]"}:
+        obj[key] = []
+    else:
+        obj[key] = [str(value)]
+confidence = obj.get("confidence")
+if isinstance(confidence, str):
+    labels = {"high": 0.95, "medium": 0.80, "low": 0.50}
+    normalized = confidence.strip().lower()
+    if normalized in labels:
+        obj["confidence"] = labels[normalized]
 target.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
 PY
 }
@@ -201,11 +224,14 @@ runner_json="$run_dir/runner.json"
 schema="$SCRIPT_DIR/../references/verify.schema.json"
 
 cat > "$prompt" <<EOF
-Use deslop_verifier if available. Spawn two verifier perspectives if possible:
+You are running as the selected Ultimate De-Slop verifier role. Do not delegate to another verifier, load skill files recursively, or run nested de-slop harness commands. Consider these two perspectives internally:
 1. acceptance verifier: did the fix satisfy the finding?
 2. regression/slop verifier: did it introduce regressions, over-abstraction, or move complexity?
 
-Do not edit files. Verify the original finding against the check output and the per-finding fix attempt context. Base the finding-specific verdict on the delta introduced during this fix attempt. The current git diff may include earlier verified but uncommitted findings; use it only for interaction/regression context and do not fail solely because unrelated baseline changes are present. Judge whether the fix truly satisfies acceptance criteria, whether behavior stayed intact, and whether the patch created new slop. Return PASS, FAIL, NEEDS_HUMAN, or FALSE_POSITIVE. Return ONLY JSON matching this schema: \`$schema\`.
+Do not edit files. Verify the original finding against the check output and the per-finding fix attempt context. Base the finding-specific verdict on the delta introduced during this fix attempt. The current git diff may include earlier verified but uncommitted findings; use it only for interaction/regression context and do not fail solely because unrelated baseline changes are present. Judge whether the fix truly satisfies acceptance criteria, whether behavior stayed intact, and whether the patch created new slop. Return PASS, FAIL, NEEDS_HUMAN, or FALSE_POSITIVE.
+
+Return exactly one JSON object, no markdown fences and no prose, with these keys:
+finding_id, verdict, confidence, evidence, concerns, required_follow_up.
 
 Finding:
 $(cat "$finding_json")
@@ -228,7 +254,7 @@ if [ "$code" -ne 0 ]; then
   printf 'deslop-verify: error: %s verifier failed with exit code %s. Raw output: %s Runner: %s\n' "${DESLOP_HARNESS:-codex}" "$code" "$raw" "$runner_json" >&2
   exit "$code"
 fi
-if ! extract_json "$last_message" "$verify_json" && ! extract_json "$raw" "$verify_json"; then
+if ! extract_json "$last_message" "$verify_json" "$FINDING_ID" && ! extract_json "$raw" "$verify_json" "$FINDING_ID"; then
   printf 'deslop-verify: error: JSON extraction failed. Raw output: %s\n' "$raw" >&2
   exit 1
 fi

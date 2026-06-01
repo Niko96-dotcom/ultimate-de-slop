@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 SKILL_NAME = "ultimate-de-slop"
-INSTALLER_VERSION = 1
+INSTALLER_VERSION = 2
 
 LAYOUTS = {
     "agents": {
@@ -54,7 +54,7 @@ LAYOUTS = {
         "label": "Hermes",
     },
     "opencode": {
-        "global": Path(".opencode/skills") / SKILL_NAME,
+        "global": Path(".config/opencode/skills") / SKILL_NAME,
         "local": Path(".opencode/skills") / SKILL_NAME,
         "runner_harness": "opencode",
         "label": "OpenCode",
@@ -189,6 +189,39 @@ def install_codex_profiles(source: Path, scope: str, home: Path, project_dir: Pa
     return actions
 
 
+def copy_template_files(source_dir: Path, target_dir: Path, dry_run: bool, label: str) -> list[str]:
+    actions: list[str] = []
+    if not source_dir.exists():
+        return actions
+    for item in sorted(source_dir.glob("*")):
+        if not item.is_file():
+            continue
+        destination = target_dir / item.name
+        actions.append(f"{label}: {destination}")
+        if dry_run:
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and not filecmp.cmp(item, destination, shallow=False):
+            shutil.copy2(destination, destination.with_suffix(destination.suffix + f".backup.{now()}"))
+        shutil.copy2(item, destination)
+    return actions
+
+
+def opencode_config_root(scope: str, home: Path, project_dir: Path) -> Path:
+    if scope == "global":
+        return home / ".config" / "opencode"
+    return project_dir / ".opencode"
+
+
+def install_opencode_assets(source: Path, scope: str, home: Path, project_dir: Path, dry_run: bool) -> list[str]:
+    config_root = opencode_config_root(scope, home, project_dir)
+    template_root = source / "templates" / "opencode"
+    actions: list[str] = []
+    actions.extend(copy_template_files(template_root / "agents", config_root / "agents", dry_run, "opencode agent"))
+    actions.extend(copy_template_files(template_root / "command", config_root / "command", dry_run, "opencode command"))
+    return actions
+
+
 def install(args: argparse.Namespace) -> int:
     source = skill_root()
     home = Path(args.home or os.environ.get("HOME", "~")).expanduser().resolve()
@@ -218,6 +251,12 @@ def install(args: argparse.Namespace) -> int:
         extra_actions = install_codex_profiles(source, args.scope, home, project_dir, args.dry_run)
         for action in extra_actions:
             print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
+    if args.harness == "opencode":
+        extra_actions = install_opencode_assets(source, args.scope, home, project_dir, args.dry_run)
+        for action in extra_actions:
+            print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
+        if extra_actions:
+            print("OpenCode loads agent, command, and skill files at startup; restart OpenCode if it is already running.")
 
     scripts_dir = target / "scripts"
     runner_harness = layout["runner_harness"]

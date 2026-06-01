@@ -135,6 +135,28 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(checks["status"], "passed")
             self.assertEqual(checks["results"][0]["status"], "passed")
 
+    def test_inventory_excludes_deslop_harness_artifacts(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            run(["git", "add", "sample.py"], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            review_dir = root / ".deslop" / "runs" / "20260601T000000Z-review"
+            review_dir.mkdir(parents=True)
+            (review_dir / "raw-review-output.txt").write_text("agent output\n")
+            (root / ".deslop" / "tmp" / "scratch.txt").parent.mkdir(parents=True, exist_ok=True)
+            (root / ".deslop" / "tmp" / "scratch.txt").write_text("scratch\n")
+
+            result = run([str(SCRIPT_DIR / "deslop-inventory.py"), "--write"], cwd=root)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            inventory = json.loads((root / ".deslop" / "inventory.json").read_text())
+            scanned_paths = {item["path"] for item in inventory["largest_files"]}
+            scanned_paths.update(item["path"] for item in inventory["todo_fixme_counts"]["files"])
+            scanned_paths.update(inventory["detected_tooling_files"])
+            self.assertEqual(inventory["candidate_file_count"], 1)
+            self.assertEqual(scanned_paths, {"sample.py"})
+
     def test_unsafe_expected_checks_stay_blocked(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
@@ -310,6 +332,64 @@ print(json.dumps(payload))
             self.assertIn("deslop_reviewer", command)
             self.assertEqual(last.read_text(), raw.read_text())
 
+    def test_agent_runner_extracts_opencode_text_events_to_last_message(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            prompt = root / "prompt.txt"
+            prompt.write_text("Return JSON.\n")
+            raw = root / "raw.txt"
+            last = root / "last.txt"
+            runner_json = root / "runner.json"
+            payload = {
+                "repo_summary": "event-stream review",
+                "review_wave_id": "wave-event",
+                "partitions_reviewed": ["root"],
+                "findings": [],
+            }
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            fake_opencode = fake_bin / "opencode"
+            fake_opencode.write_text(
+                f"""#!/usr/bin/env python3
+import json
+
+print(json.dumps({{"type": "step_start", "part": {{"type": "step-start"}}}}))
+print(json.dumps({{"type": "text", "part": {{"type": "text", "text": {json.dumps(json.dumps(payload))}}}}}))
+print(json.dumps({{"type": "step_finish", "part": {{"type": "step-finish"}}}}))
+"""
+            )
+            fake_opencode.chmod(0o755)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-agent-runner.py"),
+                    "--root",
+                    str(root),
+                    "--prompt",
+                    str(prompt),
+                    "--raw-output",
+                    str(raw),
+                    "--last-message",
+                    str(last),
+                    "--runner-json",
+                    str(runner_json),
+                    "--schema",
+                    str(SKILL_DIR / "references" / "review.schema.json"),
+                    "--sandbox",
+                    "read-only",
+                    "--kind",
+                    "review",
+                ],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "opencode"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('"type": "text"', raw.read_text())
+            self.assertEqual(json.loads(last.read_text()), payload)
+
     def test_agent_runner_records_missing_cli(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
@@ -449,6 +529,89 @@ print("suffix")
             self.assertTrue(review_paths)
             review = json.loads(review_paths[-1].read_text())
             self.assertEqual(review["review_wave_id"], "wave-test")
+            prompt = sorted((root / ".deslop" / "runs").glob("*-review/prompt.txt"))[-1].read_text()
+            self.assertIn("Do not inspect `.deslop/runs`", prompt)
+            self.assertIn('"repo_summary"', prompt)
+            self.assertIn("Use `severity`, not `priority`", prompt)
+            self.assertNotIn("Use $ultimate-de-slop", prompt)
+
+    def test_review_extraction_rejects_json_missing_required_review_keys(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "codex",
+                """#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+if "--output-last-message" in sys.argv:
+    Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text('{"findings": []}\\n')
+print('{"nested": "not review output"}')
+""",
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-review.sh")],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("JSON extraction failed", result.stderr)
+            review_paths = sorted((root / ".deslop" / "runs").glob("*-review/review.json"))
+            self.assertFalse(review_paths)
+
+    def test_arbitrate_normalizes_common_model_review_variants(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("def broken():\n    pass\n")
+            run(["git", "add", "sample.py"], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            review = {
+                "repo_summary": "test repo",
+                "review_wave_id": "wave-test",
+                "partitions_reviewed": ["root"],
+                "findings": [
+                    {
+                        "id": "F1",
+                        "title": "broken returns nothing",
+                        "priority": "P1",
+                        "confidence": "high",
+                        "category": "correctness",
+                        "files": "sample.py",
+                        "evidence": {"sample.py": "broken only contains pass"},
+                        "why_it_matters": "callers receive None instead of a useful value",
+                        "proposed_fix": "return a deterministic value from the function",
+                        "acceptance_criteria": "broken returns a useful value",
+                        "expected_checks": "python -m py_compile sample.py",
+                        "risk": "Low",
+                        "effort": "S",
+                    }
+                ],
+            }
+            review_path = root / "review.json"
+            review_path.write_text(json.dumps(review) + "\n")
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-arbitrate.py"), str(review_path), "--json"],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            outcome = json.loads(result.stdout)
+            self.assertEqual(len(outcome["accepted"]), 1)
+            finding = read_finding(root, outcome["accepted"][0])
+            self.assertEqual(finding["severity"], "P1")
+            self.assertEqual(finding["confidence"], 0.95)
+            self.assertEqual(finding["estimated_effort"], "small")
+            self.assertEqual(finding["risk"], "low")
+            self.assertEqual(finding["acceptance_criteria"], ["broken returns a useful value"])
+            self.assertEqual(finding["expected_checks"], ["python -m py_compile sample.py"])
+            self.assertEqual(finding["evidence"][0]["file"], "sample.py")
+            self.assertIn("broken only contains pass", finding["evidence"][0]["claim"])
 
     def test_codex_runner_shim_keeps_codex_exec_contract(self) -> None:
         tempdir, root = self.make_repo()
@@ -580,6 +743,34 @@ print(json.dumps({"argv": sys.argv[1:]}))
             self.assertFalse((target / "tests" / "__pycache__").exists())
             self.assertIn("DESLOP_HARNESS=claude", result.stdout)
 
+    def test_opencode_global_installer_uses_config_home_and_installs_native_assets(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            home = root / "home"
+            result = run(
+                [
+                    str(SCRIPT_DIR / "install" / "install-opencode.sh"),
+                    "--home",
+                    str(home),
+                ],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            target = home / ".config" / "opencode" / "skills" / "ultimate-de-slop"
+            self.assertTrue((target / "SKILL.md").exists())
+            self.assertTrue((target / "scripts" / "deslop-agent-runner.py").exists())
+            self.assertFalse((home / ".opencode" / "skills" / "ultimate-de-slop").exists())
+            reviewer = home / ".config" / "opencode" / "agents" / "deslop_reviewer.md"
+            self.assertTrue(reviewer.exists())
+            reviewer_text = reviewer.read_text()
+            self.assertIn("mode: primary", reviewer_text)
+            self.assertIn("skill: deny", reviewer_text)
+            self.assertIn("shell: deny", reviewer_text)
+            self.assertTrue((home / ".config" / "opencode" / "agents" / "deslop_fixer.md").exists())
+            self.assertTrue((home / ".config" / "opencode" / "command" / "ultimate-de-slop.md").exists())
+            self.assertIn("OpenCode loads agent, command, and skill files at startup", result.stdout)
+
     def test_installer_dry_run_does_not_write_home(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
@@ -684,6 +875,10 @@ print(text)
             self.assertIn("baseline.py", Path(snapshots["diff_before"]).read_text())
             self.assertIn("sample.py", Path(snapshots["diff_after"]).read_text())
             self.assertIn("sample.py", Path(snapshots["attempt_delta"]).read_text())
+            prompt = latest_run_file(root, "fix", "DSL-000001", "prompt.txt").read_text()
+            self.assertIn("You are running as the selected Ultimate De-Slop fixer role", prompt)
+            self.assertIn("finding_id, summary, changed_files, checks_run, risks, status", prompt)
+            self.assertNotIn("If a deslop_fixer profile or subagent is available", prompt)
 
     def test_verify_prompt_uses_per_finding_attempt_snapshot(self) -> None:
         tempdir, root = self.make_repo()
@@ -730,12 +925,12 @@ import sys
 from pathlib import Path
 
 payload = {
-    "finding_id": "DSL-000001",
+    "finding_id": "DSL-0000001",
     "verdict": "PASS",
-    "confidence": 0.9,
-    "evidence": ["checked attempt delta"],
-    "concerns": [],
-    "required_follow_up": [],
+    "confidence": "high",
+    "evidence": "checked attempt delta",
+    "concerns": "None",
+    "required_follow_up": "None",
 }
 text = json.dumps(payload)
 if "--output-last-message" in sys.argv:
@@ -752,11 +947,20 @@ print(text)
             )
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            verify = json.loads(latest_run_file(root, "verify", "DSL-000001", "verify.json").read_text())
+            self.assertEqual(verify["finding_id"], "DSL-000001")
+            self.assertEqual(verify["confidence"], 0.95)
+            self.assertEqual(verify["evidence"], ["checked attempt delta"])
+            self.assertEqual(verify["concerns"], [])
+            self.assertEqual(verify["required_follow_up"], [])
             prompt = latest_run_file(root, "verify", "DSL-000001", "prompt.txt").read_text()
             self.assertIn("Per-finding fix attempt context", prompt)
             self.assertIn("Patch-of-patches for changes introduced during this fix attempt", prompt)
             self.assertIn("do not fail solely because unrelated baseline changes are present", prompt)
             self.assertIn("sample.py", prompt)
+            self.assertIn("You are running as the selected Ultimate De-Slop verifier role", prompt)
+            self.assertIn("finding_id, verdict, confidence, evidence, concerns, required_follow_up", prompt)
+            self.assertNotIn("Use deslop_verifier if available", prompt)
 
 
 if __name__ == "__main__":

@@ -333,9 +333,33 @@ def build_adapter(args: argparse.Namespace) -> AdapterCommand:
     return ADAPTERS[harness](args, model)
 
 
-def copy_raw_to_last_message(raw_output: Path, last_message: Path) -> None:
+def extract_opencode_text(raw_output: Path) -> str:
+    if not raw_output.exists():
+        return ""
+    text_parts: list[str] = []
+    for line in raw_output.read_text(errors="ignore").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        part = event.get("part")
+        if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+            text_parts.append(part["text"])
+        elif event.get("type") == "text" and isinstance(event.get("text"), str):
+            text_parts.append(event["text"])
+    return "".join(text_parts)
+
+
+def copy_raw_to_last_message(raw_output: Path, last_message: Path, harness: str) -> None:
     if last_message.exists() and last_message.stat().st_size > 0:
         return
+    if harness == "opencode":
+        text = extract_opencode_text(raw_output)
+        if text:
+            write_text(last_message, text)
+            return
     text = raw_output.read_text(errors="ignore") if raw_output.exists() else ""
     write_text(last_message, text)
 
@@ -441,7 +465,7 @@ def run_process(args: argparse.Namespace, adapter: AdapterCommand, diagnostic: d
         exit_code = process.returncode
     if status == "completed" and exit_code:
         status = "failed"
-    copy_raw_to_last_message(args.raw_output, args.last_message)
+    copy_raw_to_last_message(args.raw_output, args.last_message, adapter.harness)
     diagnostic.update(
         {
             "duration_seconds": round(time.monotonic() - started, 3),

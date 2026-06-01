@@ -103,9 +103,7 @@ def load_config(root: Path) -> dict[str, Any]:
 
 def is_ignored(rel: Path, ignored: list[str]) -> bool:
     rel_s = rel.as_posix()
-    if rel_s in {".deslop/runs", ".deslop/tmp"}:
-        return True
-    if rel_s.startswith(".deslop/runs/") or rel_s.startswith(".deslop/tmp/"):
+    if rel.parts and rel.parts[0] == ".deslop":
         return True
     parts = set(rel.parts)
     for item in ignored:

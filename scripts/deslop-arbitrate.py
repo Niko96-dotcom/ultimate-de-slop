@@ -32,6 +32,8 @@ DEFAULT_CONFIG = {
 FINAL_STATES = {"verified", "blocked", "false_positive", "needs_human"}
 NON_OPEN_STATES = {"verified", "rejected", "false_positive"}
 STYLE_CATEGORIES = {"style", "format", "formatting", "whitespace", "naming", "comment", "comments", "cosmetic", "nit"}
+EFFORT_ALIASES = {"s": "small", "m": "medium", "l": "large"}
+CONFIDENCE_ALIASES = {"high": 0.95, "medium": 0.80, "low": 0.50}
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,101 @@ def write_findings(path: Path, findings: list[dict[str, Any]]) -> None:
 
 def normalize(text: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def as_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if str(value).strip():
+        return [str(value)]
+    return []
+
+
+def render_lines(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
+    return str(value)
+
+
+def normalize_evidence(value: Any, files: list[str]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    if isinstance(value, dict):
+        for file_name, claim in value.items():
+            normalized.append(
+                {
+                    "file": str(file_name),
+                    "lines": "",
+                    "symbol": "",
+                    "claim": str(claim),
+                }
+            )
+        return normalized
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                claim = item.get("claim")
+                if claim is None:
+                    claim = item.get("evidence") or item.get("description") or item
+                normalized.append(
+                    {
+                        "file": str(item.get("file") or (files[0] if files else "")),
+                        "lines": render_lines(item.get("lines")),
+                        "symbol": str(item.get("symbol") or ""),
+                        "claim": str(claim),
+                    }
+                )
+            elif str(item).strip():
+                normalized.append(
+                    {
+                        "file": files[0] if files else "",
+                        "lines": "",
+                        "symbol": "",
+                        "claim": str(item),
+                    }
+                )
+    elif str(value).strip():
+        normalized.append(
+            {
+                "file": files[0] if files else "",
+                "lines": "",
+                "symbol": "",
+                "claim": str(value),
+            }
+        )
+    return normalized
+
+
+def normalize_candidate(raw: dict[str, Any]) -> dict[str, Any]:
+    candidate = dict(raw)
+    if not candidate.get("severity") and candidate.get("priority"):
+        candidate["severity"] = candidate.get("priority")
+    candidate.pop("priority", None)
+    candidate["severity"] = str(candidate.get("severity", "")).upper()
+    candidate["files"] = as_string_list(candidate.get("files"))
+    candidate["evidence"] = normalize_evidence(candidate.get("evidence"), candidate["files"])
+    candidate["acceptance_criteria"] = as_string_list(candidate.get("acceptance_criteria"))
+    candidate["expected_checks"] = as_string_list(candidate.get("expected_checks"))
+    candidate["dependencies"] = as_string_list(candidate.get("dependencies"))
+    for key in ("expected_checks_explanation", "no_expected_checks_reason", "checks_explanation"):
+        if candidate.get(key) is None:
+            candidate[key] = ""
+    effort = str(candidate.get("estimated_effort") or candidate.get("effort") or "").lower()
+    candidate.pop("effort", None)
+    candidate["estimated_effort"] = EFFORT_ALIASES.get(effort, effort)
+    if candidate.get("risk") is not None:
+        candidate["risk"] = str(candidate.get("risk")).lower()
+    confidence = candidate.get("confidence")
+    if isinstance(confidence, str):
+        normalized_confidence = confidence.strip().lower()
+        if normalized_confidence in CONFIDENCE_ALIASES:
+            candidate["confidence"] = CONFIDENCE_ALIASES[normalized_confidence]
+    if candidate.get("status") is None:
+        candidate["status"] = "candidate"
+    return candidate
 
 
 def finding_key(finding: dict[str, Any]) -> str:
@@ -291,8 +388,7 @@ def arbitrate(root: Path, review_path: Path, run_dir: Path | None, json_output: 
         if not isinstance(raw, dict):
             rejected.append({"title": "<non-object>", "reasons": ["finding is not an object"]})
             continue
-        candidate = dict(raw)
-        candidate["severity"] = str(candidate.get("severity", "")).upper()
+        candidate = normalize_candidate(raw)
         key = finding_key(candidate)
         existing = by_key.get(key)
         if existing:

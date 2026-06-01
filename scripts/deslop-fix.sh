@@ -95,10 +95,15 @@ for candidate in scan_balanced(text):
 
 required = {"finding_id", "summary", "changed_files", "checks_run", "risks", "status"}
 obj = next((item for item in reversed(valid) if required.issubset(item)), None)
-if obj is None and valid:
-    obj = valid[-1]
 if obj is None:
-    print(f"could not extract JSON object from {source}", file=sys.stderr)
+    if valid:
+        seen = set()
+        for item in valid:
+            seen.update(item.keys())
+        missing = ", ".join(sorted(required - seen))
+        print(f"could not extract fix JSON object from {source}; missing required keys: {missing}", file=sys.stderr)
+    else:
+        print(f"could not extract JSON object from {source}", file=sys.stderr)
     raise SystemExit(1)
 target.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
 PY
@@ -192,9 +197,12 @@ PY
 }
 
 cat > "$prompt" <<EOF
-If a deslop_fixer profile or subagent is available, use it. Do not run deslop-loop.sh, deslop-fix.sh, or any nested de-slop harness command from inside this fixer session.
+You are running as the selected Ultimate De-Slop fixer role. Do not delegate to another fixer, load skill files recursively, or run deslop-loop.sh, deslop-fix.sh, or any nested de-slop harness command from inside this fixer session.
 
-Fix exactly one finding. Do not fix unrelated issues. Do not clean up while you are here. Preserve behavior unless explicitly required. Prefer deleting/moving complexity to adding abstraction. Add or update tests when useful. Run the expected checks when practical. Return ONLY JSON matching this schema: \`$schema\`.
+Fix exactly one finding. Do not fix unrelated issues. Do not clean up while you are here. Preserve behavior unless explicitly required. Prefer deleting/moving complexity to adding abstraction. Add or update tests when useful. Run the expected checks when practical.
+
+Return exactly one JSON object, no markdown fences and no prose, with these keys:
+finding_id, summary, changed_files, checks_run, risks, status.
 
 Read AGENTS.md files that apply, if any. Read \`.deslop/index.md\`. Obey soft budgets from \`.deslop/config.json\` for touched files and changed lines.
 

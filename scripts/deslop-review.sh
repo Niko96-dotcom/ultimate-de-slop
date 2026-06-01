@@ -69,10 +69,15 @@ for candidate in scan_balanced(text):
 
 required = {"repo_summary", "review_wave_id", "partitions_reviewed", "findings"}
 obj = next((item for item in reversed(valid) if required.issubset(item)), None)
-if obj is None and valid:
-    obj = valid[-1]
 if obj is None:
-    print(f"could not extract JSON object from {source}", file=sys.stderr)
+    if valid:
+        seen = set()
+        for item in valid:
+            seen.update(item.keys())
+        missing = ", ".join(sorted(required - seen))
+        print(f"could not extract review JSON object from {source}; missing required keys: {missing}", file=sys.stderr)
+    else:
+        print(f"could not extract JSON object from {source}", file=sys.stderr)
     raise SystemExit(1)
 target.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
 PY
@@ -100,16 +105,37 @@ runner_json="$run_dir/runner.json"
 schema="$SCRIPT_DIR/../references/review.schema.json"
 
 cat > "$prompt" <<'EOF'
-Use $ultimate-de-slop if available.
-
-You are performing a whole-codebase ultimate-de-slop review, not a latest-diff review. Review the repo by partitions using `.deslop/index.md` and `.deslop/inventory.json`. Spawn specialized read-only reviewer subagents where useful and wait for all results. Use these perspectives where useful:
+You are performing a whole-codebase ultimate-de-slop review, not a latest-diff review. Review the repo by partitions using `.deslop/index.md` and `.deslop/inventory.json`. Do not load skill files recursively; this harness already selected the reviewer role. Use these perspectives where useful:
 - architecture/maintainability
 - correctness/bug risk
 - testability
 - security/boundaries
 - dependency/coupling
 
-Do not edit files. Return at most 5 findings per reviewer. Only report P0/P1/P2. No style nits. Every finding must include concrete evidence, why it matters, proposed bounded fix, acceptance criteria, expected checks, risk, effort, confidence. Return ONLY JSON matching the review schema.
+Treat `.deslop` as harness state. Read only `.deslop/index.md` and `.deslop/inventory.json`; Do not inspect `.deslop/runs`, `.deslop/tmp`, raw outputs, runner logs, or generated review/fix/check/verify artifacts as product code.
+Do not edit files. Return at most 5 findings per reviewer. Only report severity P0/P1/P2. No style nits.
+
+Return exactly one JSON object, no markdown fences and no prose, with this top-level shape:
+{
+  "repo_summary": "short summary",
+  "review_wave_id": "wave-YYYYMMDDTHHMMSSZ",
+  "partitions_reviewed": ["partition name"],
+  "findings": []
+}
+
+Each finding object must use these exact keys and value types:
+id, title, severity, confidence, category, status, files, evidence, why_it_matters,
+proposed_fix, acceptance_criteria, expected_checks, expected_checks_explanation,
+no_expected_checks_reason, checks_explanation, risk, dependencies, estimated_effort,
+reviewer, created_at, updated_at.
+
+Use `severity`, not `priority`; use `estimated_effort`, not `effort`; use `status` as `candidate`.
+Use `confidence` as a number from 0.0 to 1.0, not a label such as "high".
+Use `risk` as one of: low, medium, high. Use `estimated_effort` as one of: small, medium, large.
+Use arrays of strings for `files`, `acceptance_criteria`, `expected_checks`, and `dependencies`.
+Each evidence item must be an object with string fields: file, lines, symbol, claim.
+Expected checks must be simple JSON-safe command strings. Avoid shell redirection, pipes, and nested quotes in expected_checks; if a useful check needs complex quoting, leave expected_checks empty and explain it in no_expected_checks_reason.
+Return ONLY JSON matching the review schema.
 EOF
 
 set +e
