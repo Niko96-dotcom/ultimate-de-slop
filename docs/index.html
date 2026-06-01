@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ultimate De-Slop</title>
+    <meta name="description" content="A local, auditable harness for bounded AI-agent code-quality repair loops.">
+    <meta property="og:title" content="Ultimate De-Slop">
+    <meta property="og:description" content="Strict review, conservative arbitration, one-finding fixes, deterministic checks, and independent verification for AI-agent code cleanup.">
+    <meta property="og:image" content="assets/ultimate-de-slop-hero.png">
+    <meta name="theme-color" content="#f8fafc">
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="styles.css">
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareSourceCode",
+        "name": "Ultimate De-Slop",
+        "description": "A local, auditable harness for bounded AI-agent code-quality repair loops.",
+        "codeRepository": "https://github.com/Niko96-dotcom/ultimate-de-slop",
+        "programmingLanguage": ["Python", "Shell"],
+        "license": "https://opensource.org/license/mit"
+      }
+    </script>
+  </head>
+  <body>
+    <header class="site-header" aria-label="Primary">
+      <a class="brand" href="#top" aria-label="Ultimate De-Slop home">
+        <span class="brand-mark" aria-hidden="true">UD</span>
+        <span>Ultimate De-Slop</span>
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#workflow">Workflow</a>
+        <a href="#adapters">Adapters</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/Niko96-dotcom/ultimate-de-slop">GitHub</a>
+      </nav>
+      <a class="header-action" href="https://github.com/Niko96-dotcom/ultimate-de-slop">View on GitHub</a>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <h1 id="hero-title">Ultimate De-Slop</h1>
+          <p class="hero-lede">Bounded AI-agent code-quality repair loops with strict review, one-finding fixes, deterministic checks, and independent verification.</p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/Niko96-dotcom/ultimate-de-slop">Star on GitHub</a>
+            <a class="button secondary" href="#install">Install</a>
+          </div>
+          <dl class="hero-stats" aria-label="Safety defaults">
+            <div>
+              <dt>Fix scope</dt>
+              <dd>one finding</dd>
+            </div>
+            <div>
+              <dt>Verifier</dt>
+              <dd>read-only</dd>
+            </div>
+            <div>
+              <dt>Commits</dt>
+              <dd>opt-in</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="section intro" aria-labelledby="intro-title">
+        <div class="section-heading">
+          <h2 id="intro-title">A cleanup loop you can audit</h2>
+          <p>Ultimate De-Slop keeps agents useful without letting them sprawl. The deterministic harness owns state, checks, scoring, snapshots, and stop conditions; agents stay inside narrow roles.</p>
+        </div>
+        <div class="split-list">
+          <div>
+            <h3>What it prevents</h3>
+            <ul>
+              <li>open-ended rewrites</li>
+              <li>style churn disguised as quality work</li>
+              <li>silent success after a partial agent run</li>
+              <li>unreviewed accumulation across fixes</li>
+            </ul>
+          </div>
+          <div>
+            <h3>What it records</h3>
+            <ul>
+              <li>candidate findings and arbitration</li>
+              <li>prompts, raw output, and extracted JSON</li>
+              <li>deterministic check results</li>
+              <li>verifier decisions and loop state</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section band" id="workflow" aria-labelledby="workflow-title">
+        <div class="section-heading">
+          <h2 id="workflow-title">The bounded loop</h2>
+          <p>Each stage has a role, a permission boundary, and a concrete artifact.</p>
+        </div>
+        <div class="timeline" aria-label="Ultimate De-Slop workflow">
+          <article>
+            <span>1</span>
+            <h3>Inventory</h3>
+            <p>Map source files, likely commands, risk partitions, and large-file pressure.</p>
+          </article>
+          <article>
+            <span>2</span>
+            <h3>Review</h3>
+            <p>Read-only structural review reports only concrete P0, P1, or bounded P2 findings.</p>
+          </article>
+          <article>
+            <span>3</span>
+            <h3>Arbitrate</h3>
+            <p>Weak, duplicate, vague, low-confidence, or subjective findings are rejected.</p>
+          </article>
+          <article>
+            <span>4</span>
+            <h3>Fix</h3>
+            <p>The fixer edits exactly one accepted finding and records before/after snapshots.</p>
+          </article>
+          <article>
+            <span>5</span>
+            <h3>Check</h3>
+            <p>Expected commands run through a conservative allowlist and write traceable logs.</p>
+          </article>
+          <article>
+            <span>6</span>
+            <h3>Verify</h3>
+            <p>A separate read-only verifier judges the patch against the original finding.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="adapters" aria-labelledby="adapters-title">
+        <div class="section-heading">
+          <h2 id="adapters-title">Adapter coverage</h2>
+          <p>Adapters stay thin. They invoke the selected CLI and return output to the deterministic harness.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Harness</th>
+                <th>Status</th>
+                <th>Invocation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>Codex</td><td>default</td><td><code>codex exec</code></td></tr>
+              <tr><td>Claude</td><td>supported</td><td><code>claude -p</code></td></tr>
+              <tr><td>OpenCode</td><td>supported</td><td><code>opencode run</code></td></tr>
+              <tr><td>Cursor</td><td>supported</td><td><code>cursor-agent --print</code></td></tr>
+              <tr><td>Pi</td><td>supported</td><td><code>pi --print</code></td></tr>
+              <tr><td>Command Code</td><td>supported</td><td><code>commandcode --print</code></td></tr>
+              <tr><td>Hermes</td><td>supported</td><td><code>hermes -z</code></td></tr>
+              <tr><td>OpenClaw</td><td>guarded</td><td>actionable failure until CLI contract is known</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section install-band" id="install" aria-labelledby="install-title">
+        <div class="install-grid">
+          <div>
+            <h2 id="install-title">Install and run</h2>
+            <p>Install the skill for your preferred harness, then run the loop from the repository you want to improve.</p>
+          </div>
+          <pre><code>git clone https://github.com/Niko96-dotcom/ultimate-de-slop.git
+cd ultimate-de-slop
+scripts/install/install-codex.sh
+
+SKILL_DIR="$HOME/.codex/skills/ultimate-de-slop"
+cd /path/to/your/repo
+"$SKILL_DIR/scripts/deslop-init.sh"
+"$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations 5 --priority P0,P1</code></pre>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="artifacts-title">
+        <div class="section-heading">
+          <h2 id="artifacts-title">Local artifacts</h2>
+          <p>Runtime state stays in the target repository under `.deslop/`, where it can be inspected, resumed, or removed.</p>
+        </div>
+        <div class="artifact-grid">
+          <article><h3>config</h3><p>iteration limits, confidence thresholds, timeouts, and ignored paths</p></article>
+          <article><h3>findings</h3><p>append-friendly finding lifecycle records with status transitions</p></article>
+          <article><h3>runs</h3><p>prompt files, raw output, extracted JSON, runner metadata, and check logs</p></article>
+          <article><h3>state</h3><p>score, counters, stop state, current iteration, and next suggested command</p></article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <strong>Ultimate De-Slop</strong>
+        <p>Open-source local harness for agentic code-quality repair.</p>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/Niko96-dotcom/ultimate-de-slop/blob/main/README.md">README</a>
+        <a href="https://github.com/Niko96-dotcom/ultimate-de-slop/blob/main/SECURITY.md">Security</a>
+        <a href="https://github.com/Niko96-dotcom/ultimate-de-slop/blob/main/LICENSE">MIT License</a>
+      </div>
+    </footer>
+  </body>
+</html>
