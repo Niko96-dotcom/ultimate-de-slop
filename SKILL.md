@@ -93,6 +93,44 @@ For multi-iteration runs without `--commit`, the verifier must use the per-findi
 
 Stop when no accepted P0/P1 findings remain after a review wave, two consecutive review waves find no new accepted high-confidence P0/P1 findings, remaining P2s are low-value or below threshold, max iterations or attempts are reached, `.deslop/stop` exists, the tree is unexpectedly dirty, verification deadlocks, or human review is required.
 
+## Multi-Session Loops and Context
+
+The loop is designed to run across many sessions without carrying chat history forward.
+
+- State lives on disk under `.deslop/` (`findings.jsonl`, `state.json`, per-run artifacts). Each child-agent call is a fresh CLI invocation with a bounded prompt.
+- Review uses `.deslop/index.md` and `.deslop/inventory.json` partitions instead of reloading the whole repo into one conversation.
+- Fix and verify one finding at a time. The verifier judges the per-finding fix snapshot first; the full git diff is regression context only.
+- Do not read `.deslop/runs/` or raw agent logs into the parent chat unless debugging. Use `scripts/deslop-status.py` and `scripts/deslop-next.py` to decide what happens next.
+
+Typical multi-session flow:
+
+```sh
+scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1
+# later, in a new session:
+scripts/deslop-status.py
+scripts/deslop-next.py --priority P0,P1
+scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1
+```
+
+If a run stops after one fix, check `scripts/deslop-status.py` for `loop_outcome.stop_reason`:
+
+- `no_eligible_findings`: the queue at the chosen priority is empty. That is normal after a successful fix when no more accepted P0/P1 remain. Re-run the loop to start another review wave, or widen priority to include P2.
+- `finalize_halt`: verifier returned FAIL/NEEDS_HUMAN or checks failed. Resume with `scripts/deslop-resume.py` after human review if appropriate.
+- `max_iterations_reached`: raise `--max-iterations`.
+
+Use `--review-every N` to drain several queued findings before spending another full-repo review. Example: `--review-every 3` fixes up to three accepted findings before the next review wave.
+
+## Default Stop Priority
+
+Default loop fuel is **P0 and P1**, not P2 alone.
+
+- P0: correctness, security, build/test breaks.
+- P1: serious structural issues already hurting maintainability.
+- P2: bounded medium-risk cleanup with a higher confidence bar (default >= 0.85). Include it only when you explicitly want that tier: `--priority P0,P1,P2`.
+- P3: never loop fuel.
+
+So the loop should usually stop once P0/P1 are clear, even if P2 findings remain. That is intentional. To continue into medium-tier cleanup, re-run with `--priority P2` or `--priority P0,P1,P2`.
+
 Resume halted findings with `scripts/deslop-resume.py FINDING_ID --as accepted|rejected|false_positive|verified`. After a loop exits, read `scripts/deslop-status.py` / `.deslop/state.json` `loop_outcome` for stop reason, verified finding IDs, queued next work, and any `needs_human` / `false_positive` details. Verifier verdicts must include non-empty evidence; `NEEDS_HUMAN` also requires concerns or required follow-up.
 
 ## References
