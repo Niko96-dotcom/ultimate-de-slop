@@ -1909,6 +1909,182 @@ printf '%s\\n' "$payload"
             self.assertIn("no_eligible_findings", result.stdout)
             self.assertIn("Loop outcome", result.stdout)
 
+    def test_deterministic_proof_run(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "app.py").write_text(
+                """def create(payload):
+    if not payload.get("name"):
+        raise ValueError("name required")
+    if not payload.get("email"):
+        raise ValueError("email required")
+    return payload
+
+
+def update(payload):
+    if not payload.get("name"):
+        raise ValueError("name required")
+    if not payload.get("email"):
+        raise ValueError("email required")
+    return payload
+"""
+            )
+            (root / ".gitignore").write_text(".deslop/\nfake-bin/\n")
+            run(["git", "add", "app.py", ".gitignore"], cwd=root, check=True)
+            run(["git", "commit", "-m", "duplicate validation"], cwd=root, check=True)
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "codex",
+                r"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+argv = sys.argv[1:]
+schema = ""
+last = ""
+root = Path.cwd()
+idx = 0
+while idx < len(argv):
+    arg = argv[idx]
+    if arg == "--output-schema":
+        schema = argv[idx + 1]
+        idx += 2
+        continue
+    if arg == "--output-last-message":
+        last = argv[idx + 1]
+        idx += 2
+        continue
+    if arg == "--cd":
+        root = Path(argv[idx + 1])
+        idx += 2
+        continue
+    idx += 1
+
+prompt = sys.stdin.read()
+schema_name = Path(schema).name if schema else ""
+state_path = root / ".deslop" / "proof-fake-state.json"
+state = {"reviews": 0}
+if state_path.exists():
+    state = json.loads(state_path.read_text())
+
+if schema_name == "review.schema.json":
+    state["reviews"] = int(state.get("reviews", 0)) + 1
+    if state["reviews"] == 1:
+        payload = {
+            "repo_summary": "small python app with duplicated validation",
+            "review_wave_id": "wave-proof-1",
+            "partitions_reviewed": ["."],
+            "findings": [
+                {
+                    "id": "candidate-1",
+                    "title": "Request validation is duplicated across create and update",
+                    "severity": "P1",
+                    "confidence": 0.91,
+                    "category": "boundary-abstraction",
+                    "status": "candidate",
+                    "files": ["app.py"],
+                    "evidence": [
+                        {
+                            "file": "app.py",
+                            "lines": "1-20",
+                            "symbol": "create",
+                            "claim": "create() and update() both repeat `if not payload.get(\"name\")` and email checks.",
+                        }
+                    ],
+                    "why_it_matters": "Divergent validation can produce inconsistent writes.",
+                    "proposed_fix": "Extract shared validate_payload() and call it from create and update.",
+                    "acceptance_criteria": ["create and update call one shared validator"],
+                    "expected_checks": ["python3 -m py_compile app.py"],
+                    "expected_checks_explanation": "",
+                    "no_expected_checks_reason": "",
+                    "checks_explanation": "",
+                    "risk": "low",
+                    "dependencies": [],
+                    "estimated_effort": "small",
+                    "reviewer": "deslop-reviewer",
+                    "created_at": "2026-07-08T00:00:00Z",
+                    "updated_at": "2026-07-08T00:00:00Z",
+                }
+            ],
+        }
+    else:
+        payload = {
+            "repo_summary": "validation already shared",
+            "review_wave_id": "wave-proof-2",
+            "partitions_reviewed": ["."],
+            "findings": [],
+        }
+elif schema_name == "fix.schema.json":
+    app = root / "app.py"
+    app.write_text(
+        "def validate_payload(payload):\n"
+        "    if not payload.get(\"name\"):\n"
+        "        raise ValueError(\"name required\")\n"
+        "    if not payload.get(\"email\"):\n"
+        "        raise ValueError(\"email required\")\n"
+        "    return payload\n"
+        "\n"
+        "\n"
+        "def create(payload):\n"
+        "    return validate_payload(payload)\n"
+        "\n"
+        "\n"
+        "def update(payload):\n"
+        "    return validate_payload(payload)\n"
+    )
+    payload = {
+        "finding_id": "DSL-000001",
+        "summary": "Extracted shared validate_payload helper",
+        "changed_files": ["app.py"],
+        "checks_run": ["python3 -m py_compile app.py"],
+        "risks": ["low"],
+        "status": "fixed",
+    }
+elif schema_name == "verify.schema.json":
+    payload = {
+        "finding_id": "DSL-000001",
+        "verdict": "PASS",
+        "confidence": 0.93,
+        "evidence": ["create and update both call validate_payload()"],
+        "concerns": [],
+        "required_follow_up": [],
+    }
+else:
+    raise SystemExit(f"unexpected schema: {schema_name or schema}")
+
+state_path.parent.mkdir(parents=True, exist_ok=True)
+state_path.write_text(json.dumps(state) + "\n")
+text = json.dumps(payload)
+if last:
+    Path(last).write_text(text + "\n")
+print(text)
+""",
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-loop.sh"), "--max-iterations", "2", "--priority", "P0,P1"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "codex"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            finding = read_finding(root, "DSL-000001")
+            self.assertEqual(finding["status"], "verified")
+            self.assertIn("validate_payload", (root / "app.py").read_text())
+            state = json.loads((root / ".deslop" / "state.json").read_text())
+            outcome = state["loop_outcome"]
+            self.assertEqual(outcome["stop_reason"], "no_eligible_findings")
+            self.assertEqual(outcome["verified_ids"], ["DSL-000001"])
+            self.assertTrue(list((root / ".deslop" / "runs").glob("*-review/review.json")))
+            self.assertTrue(list((root / ".deslop" / "runs").glob("*-fix-DSL-000001/fix.json")))
+            self.assertTrue(list((root / ".deslop" / "runs").glob("*-verify-DSL-000001/verify.json")))
+            self.assertIn("Loop outcome", result.stdout)
+            self.assertIn("DSL-000001", result.stdout)
+            self.assertIn("no_eligible_findings", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

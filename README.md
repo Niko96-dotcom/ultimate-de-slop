@@ -132,6 +132,18 @@ Runtime artifacts are intentionally gitignored in this repository.
 | `tests/` | local unittest coverage for the control plane |
 | `docs/` | GitHub Pages landing page |
 
+## Loop Outcome Summary
+
+After a bounded loop exits, `deslop-status.py` prints why it stopped, which findings were verified in that run, what is still queued, and any `needs_human` / `false_positive` reasons. The same summary is persisted as `.deslop/state.json` → `loop_outcome`.
+
+## Deterministic Proof
+
+CI proves the control plane without a live model. A fake Codex CLI drives review → fix → checks → verify → finalize and asserts a clear `no_eligible_findings` stop outcome. See [references/proof-run.md](references/proof-run.md).
+
+```sh
+python3 -m unittest tests.test_harness.HarnessTests.test_deterministic_proof_run -v
+```
+
 ## Development
 
 Run the local control-plane tests:

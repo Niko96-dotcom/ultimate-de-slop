@@ -93,6 +93,8 @@ For multi-iteration runs without `--commit`, the verifier must use the per-findi
 
 Stop when no accepted P0/P1 findings remain after a review wave, two consecutive review waves find no new accepted high-confidence P0/P1 findings, remaining P2s are low-value or below threshold, max iterations or attempts are reached, `.deslop/stop` exists, the tree is unexpectedly dirty, verification deadlocks, or human review is required.
 
+After a loop exits, read `scripts/deslop-status.py` / `.deslop/state.json` `loop_outcome` for stop reason, verified finding IDs, queued next work, and any `needs_human` / `false_positive` details. Verifier verdicts must include non-empty evidence; `NEEDS_HUMAN` also requires concerns or required follow-up.
+
 ## References
 
 Read these only as needed:
@@ -105,3 +107,4 @@ Read these only as needed:
 - `references/stop-policy.md` for loop termination rules.
 - `references/prompt-templates.md` for generated prompt wording.
 - `references/examples.md` for example artifacts.
+- `references/proof-run.md` for the deterministic control-plane proof.

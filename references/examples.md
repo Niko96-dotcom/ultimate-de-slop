@@ -80,3 +80,5 @@ Loop outcome
 Suggested commands:
   scripts/deslop-fix.sh DSL-000002
 ```
+
+See also [proof-run.md](proof-run.md) for the deterministic control-plane proof transcript shape.
