@@ -105,11 +105,44 @@ PY
 
 "$SCRIPT_DIR/deslop-init.sh"
 
+baseline_verified_ids="$(python3 - "$ROOT" <<'PY'
+import json
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+path = root / ".deslop" / "findings.jsonl"
+ids = []
+if path.exists():
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        if item.get("status") == "verified" and item.get("id"):
+            ids.append(str(item["id"]))
+print(",".join(ids))
+PY
+)"
+
+record_outcome() {
+  stop_reason="$1"
+  iterations_completed="$2"
+  shift 2
+  "$SCRIPT_DIR/deslop-record-outcome.py" \
+    --stop-reason "$stop_reason" \
+    --max-iterations "$MAX_ITERATIONS" \
+    --priority "$PRIORITY" \
+    --iterations-completed "$iterations_completed" \
+    --baseline-verified-ids "$baseline_verified_ids" \
+    "$@"
+}
+
 iteration=1
 while [ "$iteration" -le "$MAX_ITERATIONS" ]; do
   if [ -f "$ROOT/.deslop/stop" ]; then
     printf 'Stop file found: .deslop/stop\n'
-    break
+    record_outcome stop_file "$((iteration - 1))"
+    "$SCRIPT_DIR/deslop-status.py"
+    exit 0
   fi
 
   next_id="$("$SCRIPT_DIR/deslop-next.py" --priority "$PRIORITY")"
@@ -127,7 +160,9 @@ while [ "$iteration" -le "$MAX_ITERATIONS" ]; do
 
   if [ "$next_id" = "NONE" ]; then
     printf 'No eligible accepted finding remains.\n'
-    break
+    record_outcome no_eligible_findings "$((iteration - 1))"
+    "$SCRIPT_DIR/deslop-status.py"
+    exit 0
   fi
 
   printf 'Iteration %s: fixing %s\n' "$iteration" "$next_id"
@@ -146,6 +181,26 @@ while [ "$iteration" -le "$MAX_ITERATIONS" ]; do
   fi
   if ! "$SCRIPT_DIR/deslop-finalize.py" "${finalize_args[@]}"; then
     printf 'Finalize stopped the loop for %s.\n' "$next_id" >&2
+    halt_status="$(python3 - "$ROOT" "$next_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+finding_id = sys.argv[2]
+status = "unknown"
+path = root / ".deslop" / "findings.jsonl"
+if path.exists():
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        if item.get("id") == finding_id:
+            status = str(item.get("status") or "unknown")
+            break
+print(status)
+PY
+)"
+    record_outcome finalize_halt "$iteration" --halt-finding-id "$next_id" --halt-status "$halt_status" || true
     "$SCRIPT_DIR/deslop-status.py" || true
     exit 1
   fi
@@ -153,4 +208,5 @@ while [ "$iteration" -le "$MAX_ITERATIONS" ]; do
   iteration="$((iteration + 1))"
 done
 
+record_outcome max_iterations_reached "$MAX_ITERATIONS"
 "$SCRIPT_DIR/deslop-status.py"

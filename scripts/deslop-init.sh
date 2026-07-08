@@ -90,6 +90,7 @@ Created or verified:
   .deslop/index.md
 
 Next commands:
+  $SCRIPT_DIR/deslop-doctor.py
   $SCRIPT_DIR/deslop-status.py
   $SCRIPT_DIR/deslop-loop.sh --max-iterations 5 --priority P0,P1
 EOF

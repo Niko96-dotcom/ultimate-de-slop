@@ -66,7 +66,7 @@ Default confidence thresholds are P0 >= 0.70, P1 >= 0.75, and P2 >= 0.85.
 
 ## Operating Rules
 
-Before any review or fix, run init so `.deslop/config.json`, `.deslop/state.json`, `.deslop/findings.jsonl`, `.deslop/inventory.json`, and `.deslop/index.md` exist. Use `.deslop/index.md` and `.deslop/inventory.json` to partition the repo.
+Before any review or fix, run `scripts/deslop-doctor.py` when harness/auth readiness is uncertain, then run init so `.deslop/config.json`, `.deslop/state.json`, `.deslop/findings.jsonl`, `.deslop/inventory.json`, and `.deslop/index.md` exist. Use `.deslop/index.md` and `.deslop/inventory.json` to partition the repo.
 
 Set `DESLOP_HARNESS=<harness>` to choose the child-agent harness. The default is `codex`.
 Supported harness values are `codex`, `claude`, `opencode`, `cursor`, `pi`, `commandcode`, `hermes`, and `openclaw`.
@@ -93,6 +93,8 @@ For multi-iteration runs without `--commit`, the verifier must use the per-findi
 
 Stop when no accepted P0/P1 findings remain after a review wave, two consecutive review waves find no new accepted high-confidence P0/P1 findings, remaining P2s are low-value or below threshold, max iterations or attempts are reached, `.deslop/stop` exists, the tree is unexpectedly dirty, verification deadlocks, or human review is required.
 
+Resume halted findings with `scripts/deslop-resume.py FINDING_ID --as accepted|rejected|false_positive|verified`. After a loop exits, read `scripts/deslop-status.py` / `.deslop/state.json` `loop_outcome` for stop reason, verified finding IDs, queued next work, and any `needs_human` / `false_positive` details. Verifier verdicts must include non-empty evidence; `NEEDS_HUMAN` also requires concerns or required follow-up.
+
 ## References
 
 Read these only as needed:
@@ -105,3 +107,5 @@ Read these only as needed:
 - `references/stop-policy.md` for loop termination rules.
 - `references/prompt-templates.md` for generated prompt wording.
 - `references/examples.md` for example artifacts.
+- `references/proof-run.md` for the deterministic control-plane proof.
+- `references/soak-runs.md` for live multi-harness soak recording.

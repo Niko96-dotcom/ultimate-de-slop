@@ -37,6 +37,7 @@ Run the harness inside the repository you want to improve:
 SKILL_DIR="$HOME/.codex/skills/ultimate-de-slop"
 cd /path/to/your/repo
 "$SKILL_DIR/scripts/deslop-init.sh"
+"$SKILL_DIR/scripts/deslop-doctor.py"
 "$SKILL_DIR/scripts/deslop-status.py"
 "$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations 5 --priority P0,P1
 ```
@@ -116,7 +117,9 @@ Installers live under `scripts/install/` and accept `--scope global`, `--scope l
 | `.deslop/inventory.json` | deterministic repository inventory |
 | `.deslop/index.md` | human-readable inventory and command summary |
 | `.deslop/findings.jsonl` | append-friendly finding state |
-| `.deslop/state.json` | counters, stop state, and loop metadata |
+| `.deslop/state.json` | counters, stop state, loop outcome, and loop metadata |
+| `scripts/deslop-doctor.py` | harness PATH/auth/model readiness check |
+| `scripts/deslop-resume.py` | resolve `needs_human` / `blocked` findings |
 | `.deslop/runs/` | prompts, raw output, extracted JSON, check logs |
 
 Runtime artifacts are intentionally gitignored in this repository.
@@ -131,6 +134,18 @@ Runtime artifacts are intentionally gitignored in this repository.
 | `templates/` | Codex agent profiles and portable role guidance |
 | `tests/` | local unittest coverage for the control plane |
 | `docs/` | GitHub Pages landing page |
+
+## Loop Outcome Summary
+
+After a bounded loop exits, `deslop-status.py` prints why it stopped, which findings were verified in that run, what is still queued, and any `needs_human` / `false_positive` reasons. The same summary is persisted as `.deslop/state.json` → `loop_outcome`.
+
+## Deterministic Proof
+
+CI proves the control plane without a live model. A fake Codex CLI drives review → fix → checks → verify → finalize and asserts a clear `no_eligible_findings` stop outcome. See [references/proof-run.md](references/proof-run.md) and the live soak template in [references/soak-runs.md](references/soak-runs.md).
+
+```sh
+python3 -m unittest tests.test_harness.HarnessTests.test_deterministic_proof_run -v
+```
 
 ## Development
 

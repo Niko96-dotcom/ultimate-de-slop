@@ -18,3 +18,11 @@ Verdicts:
 - `FAIL`: fix does not satisfy the finding, breaks checks, broadens scope, or introduces new slop.
 - `NEEDS_HUMAN`: risk, ambiguity, or external behavior needs human judgment.
 - `FALSE_POSITIVE`: original finding was invalid.
+
+Quality gates enforced by the harness:
+
+- Every verdict must include non-empty `evidence`.
+- `NEEDS_HUMAN` must include non-empty `concerns` or non-empty `required_follow_up`.
+- `FALSE_POSITIVE` evidence must explain why the original finding was invalid.
+- Thin verdicts are rejected before finalize.
+- A `PASS` is rejected when acceptance criteria or expected checks imply behavioral coverage (unittest/pytest/assert/test) but `last_fix.changed_files` includes no test/spec path.
