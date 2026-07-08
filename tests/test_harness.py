@@ -2085,6 +2085,65 @@ print(text)
             self.assertIn("DSL-000001", result.stdout)
             self.assertIn("no_eligible_findings", result.stdout)
 
+    def test_doctor_reports_missing_cli(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            empty_bin = root / "empty-bin"
+            empty_bin.mkdir()
+            result = run(
+                [sys.executable, str(SCRIPT_DIR / "deslop-doctor.py"), "--json", "--harness", "codex"],
+                cwd=root,
+                env={"PATH": str(empty_bin), "DESLOP_HARNESS": "codex"},
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertFalse(report["ready"])
+            codes = {item["code"]: item for item in report["checks"]}
+            self.assertFalse(codes["cli_on_path"]["ok"])
+
+    def test_doctor_requires_cursor_auth(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "cursor-agent", "#!/usr/bin/env bash\nexit 0\n")
+            env = {
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "DESLOP_HARNESS": "cursor",
+            }
+            env.pop("CURSOR_API_KEY", None)
+            env.pop("CURSOR_AUTH_TOKEN", None)
+            # scrub inherited auth
+            clean = {k: v for k, v in os.environ.items() if k not in {"CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"}}
+            clean.update(env)
+            result = run(
+                [sys.executable, str(SCRIPT_DIR / "deslop-doctor.py"), "--json", "--harness", "cursor"],
+                cwd=root,
+                env=clean,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            codes = {item["code"]: item for item in report["checks"]}
+            self.assertTrue(codes["cli_on_path"]["ok"])
+            self.assertFalse(codes["auth_env"]["ok"])
+
+    def test_doctor_ready_when_cli_present(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "codex", "#!/usr/bin/env bash\nexit 0\n")
+            result = run(
+                [sys.executable, str(SCRIPT_DIR / "deslop-doctor.py"), "--json", "--harness", "codex"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "codex"},
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertTrue(report["ready"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

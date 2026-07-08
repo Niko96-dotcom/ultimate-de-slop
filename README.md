@@ -37,6 +37,7 @@ Run the harness inside the repository you want to improve:
 SKILL_DIR="$HOME/.codex/skills/ultimate-de-slop"
 cd /path/to/your/repo
 "$SKILL_DIR/scripts/deslop-init.sh"
+"$SKILL_DIR/scripts/deslop-doctor.py"
 "$SKILL_DIR/scripts/deslop-status.py"
 "$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations 5 --priority P0,P1
 ```
