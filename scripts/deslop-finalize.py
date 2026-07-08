@@ -261,6 +261,18 @@ def main() -> int:
         print(f"Checks failed: {checks_path}")
     if verdict:
         print(f"Verifier verdict: {verdict}")
+    if isinstance(verify, dict):
+        for label, key in (
+            ("Evidence", "evidence"),
+            ("Concerns", "concerns"),
+            ("Required follow-up", "required_follow_up"),
+        ):
+            values = [str(item).strip() for item in (verify.get(key) or []) if str(item).strip()]
+            if not values:
+                continue
+            print(f"{label}:")
+            for value in values:
+                print(f"  - {value}")
     return exit_code
 
 

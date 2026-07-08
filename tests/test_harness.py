@@ -1657,6 +1657,101 @@ print(text)
                 ["The duplicated helpers already share validate_request()."],
             )
 
+    def test_finalize_prints_needs_human_reasons(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            finding = minimal_finding("DSL-000001")
+            finding["status"] = "fixed_unverified"
+            write_findings(root, finding)
+            verify_dir = root / ".deslop" / "runs" / "20260531T000200Z-verify-DSL-000001"
+            verify_dir.mkdir(parents=True)
+            verify_path = verify_dir / "verify.json"
+            verify_path.write_text(
+                json.dumps(
+                    {
+                        "finding_id": "DSL-000001",
+                        "verdict": "NEEDS_HUMAN",
+                        "confidence": 0.88,
+                        "evidence": ["Auth boundary changed"],
+                        "concerns": ["Unclear whether session invalidation is intentional"],
+                        "required_follow_up": ["Confirm logout semantics with product"],
+                    }
+                )
+                + "\n"
+            )
+            checks_dir = root / ".deslop" / "runs" / "20260531T000100Z-checks-DSL-000001"
+            checks_dir.mkdir(parents=True)
+            checks_path = checks_dir / "checks.json"
+            checks_path.write_text(
+                json.dumps({"finding_id": "DSL-000001", "status": "passed", "results": []}) + "\n"
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-finalize.py"),
+                    "DSL-000001",
+                    "--verify-json",
+                    str(verify_path),
+                    "--checks-json",
+                    str(checks_path),
+                ],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+            self.assertIn("needs_human", result.stdout)
+            self.assertIn("Unclear whether session invalidation is intentional", result.stdout)
+            self.assertIn("Confirm logout semantics with product", result.stdout)
+            self.assertEqual(read_finding(root, "DSL-000001")["status"], "needs_human")
+
+    def test_finalize_prints_false_positive_evidence(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            finding = minimal_finding("DSL-000001")
+            finding["status"] = "fixed_unverified"
+            write_findings(root, finding)
+            verify_dir = root / ".deslop" / "runs" / "20260531T000200Z-verify-DSL-000001"
+            verify_dir.mkdir(parents=True)
+            verify_path = verify_dir / "verify.json"
+            verify_path.write_text(
+                json.dumps(
+                    {
+                        "finding_id": "DSL-000001",
+                        "verdict": "FALSE_POSITIVE",
+                        "confidence": 0.91,
+                        "evidence": ["Helpers already share one validator"],
+                        "concerns": [],
+                        "required_follow_up": [],
+                    }
+                )
+                + "\n"
+            )
+            checks_dir = root / ".deslop" / "runs" / "20260531T000100Z-checks-DSL-000001"
+            checks_dir.mkdir(parents=True)
+            checks_path = checks_dir / "checks.json"
+            checks_path.write_text(
+                json.dumps({"finding_id": "DSL-000001", "status": "passed", "results": []}) + "\n"
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-finalize.py"),
+                    "DSL-000001",
+                    "--verify-json",
+                    str(verify_path),
+                    "--checks-json",
+                    str(checks_path),
+                ],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("false_positive", result.stdout)
+            self.assertIn("Helpers already share one validator", result.stdout)
+            self.assertEqual(read_finding(root, "DSL-000001")["status"], "false_positive")
+
 
 if __name__ == "__main__":
     unittest.main()
