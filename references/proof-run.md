@@ -30,3 +30,7 @@ make ci
 ## Why this is the right proof shape
 
 Live LLM runs are useful demos, but they are non-deterministic and expensive for CI. The harness claim is that the outer loop is auditable and restartable even when agent output is imperfect. A kind-driven fake CLI exercises that claim: prompts, JSON extraction, arbitration, snapshots, checks, verification gates, finalize, and loop outcome persistence all run for real.
+
+## Live soaks
+
+For real harness/model soaks, use the template in [soak-runs.md](soak-runs.md).

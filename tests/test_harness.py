@@ -142,7 +142,7 @@ def minimal_finding(
     files: list[str] | None = None,
 ) -> dict[str, object]:
     return {
-        "acceptance_criteria": ["test criterion"],
+        "acceptance_criteria": ["shared helper is used by both callers"],
         "attempts": 0,
         "category": "test",
         "confidence": 0.99,
@@ -2143,6 +2143,181 @@ print(text)
             report = json.loads(result.stdout)
             self.assertTrue(report["ready"])
 
+    def test_verify_rejects_pass_without_test_file_changes(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            checks_path = prepare_verify_fixture(root)
+            finding = read_finding(root, "DSL-000001")
+            finding["expected_checks"] = ["python3 -m unittest discover -s tests -v"]
+            finding["acceptance_criteria"] = ["add a regression test for the shared validator"]
+            finding["last_fix"] = {
+                **(finding.get("last_fix") or {}),
+                "changed_files": ["sample.py"],
+            }
+            write_findings(root, finding)
+            fake_bin = root / "fake-bin"
+            write_fake_codex_verify(
+                fake_bin,
+                {
+                    "finding_id": "DSL-000001",
+                    "verdict": "PASS",
+                    "confidence": 0.9,
+                    "evidence": ["validator is shared"],
+                    "concerns": [],
+                    "required_follow_up": [],
+                },
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-verify.sh"), "--checks-json", str(checks_path), "DSL-000001"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("behavioral coverage", result.stderr)
+            self.assertIn("test", result.stderr.lower())
+
+    def test_status_priority_note_when_p2_remain(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            verified = minimal_finding("DSL-000001")
+            verified["status"] = "verified"
+            p2 = minimal_finding("DSL-000004")
+            p2["severity"] = "P2"
+            p2["status"] = "accepted"
+            p2["title"] = "Queued P2 cleanup"
+            write_findings(root, verified, p2)
+            run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-record-outcome.py"),
+                    "--stop-reason",
+                    "no_eligible_findings",
+                    "--max-iterations",
+                    "5",
+                    "--priority",
+                    "P0,P1",
+                    "--iterations-completed",
+                    "2",
+                    "--baseline-verified-ids",
+                    "",
+                ],
+                cwd=root,
+                check=True,
+            )
+
+            result = run([sys.executable, str(SCRIPT_DIR / "deslop-status.py"), "--json"], cwd=root)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            status = json.loads(result.stdout)
+            self.assertIsNone(status["next"])
+            self.assertIn("P2 remain", status["loop_summary"]["priority_note"])
+            self.assertTrue(any("P0,P1,P2" in command for command in status["suggested_commands"]))
+
+            text = run([sys.executable, str(SCRIPT_DIR / "deslop-status.py")], cwd=root)
+            self.assertIn("Priority note", text.stdout)
+            self.assertIn("P2 remain", text.stdout)
+
+    def test_fix_marks_needs_human_when_change_budget_exceeded(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            (root / "extra.py").write_text("other = 1\n")
+            run(["git", "add", "sample.py", "extra.py"], cwd=root, check=True)
+            run(["git", "commit", "-m", "base"], cwd=root, check=True)
+            config = json.loads((root / ".deslop" / "config.json").read_text())
+            config["max_changed_files_per_fix"] = 1
+            config["max_changed_lines_per_fix"] = 400
+            (root / ".deslop" / "config.json").write_text(json.dumps(config) + "\n")
+            write_findings(root, minimal_finding("DSL-000001", files=["sample.py", "extra.py"]))
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "codex",
+                """#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+root = Path.cwd()
+(root / "sample.py").write_text("value = 2\\n")
+(root / "extra.py").write_text("other = 2\\n")
+payload = {
+    "finding_id": "DSL-000001",
+    "summary": "touched two files",
+    "changed_files": ["sample.py", "extra.py"],
+    "checks_run": [],
+    "risks": [],
+    "status": "fixed",
+}
+text = json.dumps(payload)
+if "--output-last-message" in sys.argv:
+    Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text(text + "\\n")
+print(text)
+""",
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-fix.sh"), "--allow-dirty", "DSL-000001"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            finding = read_finding(root, "DSL-000001")
+            self.assertEqual(finding["status"], "needs_human")
+            self.assertIn("change budget", str(finding.get("block_reason", "")))
+
+    def test_resume_moves_needs_human_to_accepted(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            finding = minimal_finding("DSL-000003")
+            finding["status"] = "needs_human"
+            finding["block_reason"] = "needs judgment"
+            write_findings(root, finding)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-resume.py"),
+                    "DSL-000003",
+                    "--as",
+                    "accepted",
+                    "--reason",
+                    "human approved retry",
+                ],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            updated = read_finding(root, "DSL-000003")
+            self.assertEqual(updated["status"], "accepted")
+            self.assertEqual(updated["resume"]["from_status"], "needs_human")
+            self.assertNotIn("block_reason", updated)
+
+    def test_resume_rejects_verified_source(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            finding = minimal_finding("DSL-000001")
+            finding["status"] = "verified"
+            write_findings(root, finding)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-resume.py"),
+                    "DSL-000001",
+                    "--as",
+                    "accepted",
+                ],
+                cwd=root,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("cannot resume", result.stderr)
 
 
 if __name__ == "__main__":

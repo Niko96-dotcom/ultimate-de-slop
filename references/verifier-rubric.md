@@ -25,3 +25,4 @@ Quality gates enforced by the harness:
 - `NEEDS_HUMAN` must include non-empty `concerns` or non-empty `required_follow_up`.
 - `FALSE_POSITIVE` evidence must explain why the original finding was invalid.
 - Thin verdicts are rejected before finalize.
+- A `PASS` is rejected when acceptance criteria or expected checks imply behavioral coverage (unittest/pytest/assert/test) but `last_fix.changed_files` includes no test/spec path.

@@ -14,47 +14,47 @@
 
 **Files:** Create `scripts/deslop-doctor.py`; modify README, `deslop-init.sh`; test in `tests/test_harness.py`
 
-- [ ] Failing tests for missing CLI / cursor auth / happy path
-- [ ] Implement doctor
-- [ ] Commit
+- [x] Failing tests for missing CLI / cursor auth / happy path
+- [x] Implement doctor
+- [x] Commit
 
 ### Task 2: Test-gap verify gate + fixer prompt
 
 **Files:** `deslop-verify.sh`, fixer prompt in `deslop-fix.sh`, rubrics/templates, tests
 
-- [ ] Failing test: PASS + unittest expected_checks + no test file changes → verify fails
-- [ ] Implement gate + prompt wording
-- [ ] Commit
+- [x] Failing test: PASS + unittest expected_checks + no test file changes → verify fails
+- [x] Implement gate + prompt wording
+- [x] Commit
 
 ### Task 3: P2-remaining status clarity
 
 **Files:** `deslop-status.py`, examples, tests
 
-- [ ] Failing test for priority_note
-- [ ] Implement
-- [ ] Commit
+- [x] Failing test for priority_note
+- [x] Implement
+- [x] Commit
 
 ### Task 4: Post-fix budgets
 
 **Files:** `deslop-fix.sh`, tests
 
-- [ ] Failing test over budget → needs_human
-- [ ] Enforce after snapshots
-- [ ] Commit
+- [x] Failing test over budget → needs_human
+- [x] Enforce after snapshots
+- [x] Commit
 
 ### Task 5: Soak docs
 
 **Files:** `references/soak-runs.md`, README, proof-run.md, CHANGELOG
 
-- [ ] Add template + links
-- [ ] Commit
+- [x] Add template + links
+- [x] Commit
 
 ### Task 6: deslop-resume
 
 **Files:** Create `scripts/deslop-resume.py`; status suggested commands; tests
 
-- [ ] Failing tests for resume transitions
-- [ ] Implement
-- [ ] Commit
+- [x] Failing tests for resume transitions
+- [x] Implement
+- [x] Commit
 
 ### Task 7: Full CI + push PR update

@@ -199,14 +199,15 @@ PY
 cat > "$prompt" <<EOF
 You are running as the selected Ultimate De-Slop fixer role. Do not delegate to another fixer, load skill files recursively, or run deslop-loop.sh, deslop-fix.sh, or any nested de-slop harness command from inside this fixer session.
 
-Fix exactly one finding. Do not fix unrelated issues. Do not clean up while you are here. Preserve behavior unless explicitly required. Prefer deleting/moving complexity to adding abstraction. Add or update tests when useful. Run the expected checks when practical.
+Fix exactly one finding. Do not fix unrelated issues. Do not clean up while you are here. Preserve behavior unless explicitly required. Prefer deleting/moving complexity to adding abstraction. Add or update a focused test when acceptance criteria or expected checks imply behavioral coverage (unittest/pytest/assert/test). Run the expected checks when practical.
 Perform the edit in the working tree before reporting success. Do not merely describe the fix. Before returning, inspect git status or git diff and make sure the files you list in changed_files actually changed.
+Hard budgets from \`.deslop/config.json\` are enforced after your edit: stay within max_changed_files_per_fix and max_changed_lines_per_fix for this attempt delta.
 
 Return exactly one JSON object, no markdown fences and no prose, with these keys:
 finding_id, summary, changed_files, checks_run, risks, status.
 Valid status values are only "fixed" and "blocked". Do not return "fixing", "in_progress", or any other status. If you cannot make the edit, return status "blocked" and leave changed_files empty.
 
-Read AGENTS.md files that apply, if any. Read \`.deslop/index.md\`. Obey soft budgets from \`.deslop/config.json\` for touched files and changed lines.
+Read AGENTS.md files that apply, if any. Read \`.deslop/index.md\`.
 
 Finding:
 $(cat "$run_dir/finding.json")
@@ -392,8 +393,44 @@ after_diff = subprocess.run(
 ).stdout
 changed_during_attempt = before_status != after_status or before_diff != after_diff
 status_text = str(fix.get("status", "")).lower()
+config_path = root / ".deslop" / "config.json"
+config = json.loads(config_path.read_text()) if config_path.exists() else {}
+max_files = int(config.get("max_changed_files_per_fix", 8) or 8)
+max_lines = int(config.get("max_changed_lines_per_fix", 400) or 400)
+
+def count_attempt_delta(delta_path: Path) -> tuple[int, int]:
+    if not delta_path.exists():
+        return 0, 0
+    text = delta_path.read_text(errors="ignore")
+    files: set[str] = set()
+    lines = 0
+    for line in text.splitlines():
+        if line.startswith("+++ ") or line.startswith("--- "):
+            marker = line[4:].strip()
+            if marker != "/dev/null":
+                if marker.startswith("a/") or marker.startswith("b/"):
+                    marker = marker[2:]
+                files.add(marker)
+        elif line.startswith("+") or line.startswith("-"):
+            if not line.startswith("+++") and not line.startswith("---"):
+                lines += 1
+    return len(files), lines
+
+attempt_files, attempt_lines = count_attempt_delta(attempt_delta)
+fix["attempt_changed_files"] = attempt_files
+fix["attempt_changed_lines"] = attempt_lines
+budget_breach = None
+if changed_during_attempt and (attempt_files > max_files or attempt_lines > max_lines):
+    budget_breach = (
+        f"fix exceeded change budget: files={attempt_files}/{max_files}, "
+        f"lines={attempt_lines}/{max_lines}"
+    )
+
 if status_text in {"blocked", "cannot_fix", "failed"}:
     target["status"] = "blocked"
+elif budget_breach:
+    target["status"] = "needs_human"
+    target["block_reason"] = budget_breach
 elif changed_files and changed_during_attempt:
     target["status"] = "fixed_unverified"
 elif changed_files:
@@ -415,9 +452,7 @@ target["last_fix"] = fix
 target["updated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 path.write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in items))
 
-config_path = root / ".deslop" / "config.json"
 state_path = root / ".deslop" / "state.json"
-config = json.loads(config_path.read_text()) if config_path.exists() else {}
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 state = json.loads(state_path.read_text()) if state_path.exists() else {
     "version": 1,
@@ -443,6 +478,9 @@ state["counters"] = {
 state["open_findings_summary"] = state["counters"]["open_by_severity"]
 state["last_run"] = {"kind": "fix", "finding_id": finding_id, "at": now, "status": target["status"]}
 state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+if budget_breach:
+    print(f"Finding {finding_id}: needs_human ({budget_breach})", file=sys.stderr)
+    raise SystemExit(1)
 if target["status"] != "fixed_unverified":
     print(f"Finding {finding_id}: {target['status']}", file=sys.stderr)
     raise SystemExit(1)

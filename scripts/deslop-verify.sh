@@ -231,6 +231,7 @@ You are running as the selected Ultimate De-Slop verifier role. Do not delegate 
 Do not edit files. Verify the original finding against the check output and the per-finding fix attempt context. Base the finding-specific verdict on the delta introduced during this fix attempt. The current git diff may include earlier verified but uncommitted findings; use it only for interaction/regression context and do not fail solely because unrelated baseline changes are present. Judge whether the fix truly satisfies acceptance criteria, whether behavior stayed intact, and whether the patch created new slop. Return PASS, FAIL, NEEDS_HUMAN, or FALSE_POSITIVE.
 
 Every verdict requires non-empty evidence. NEEDS_HUMAN requires non-empty concerns or required_follow_up explaining what a human must decide. FALSE_POSITIVE evidence must explain why the original finding was invalid.
+If acceptance criteria or expected checks imply behavioral coverage (unittest/pytest/assert/test), a PASS should only stand when the fix also added or updated a focused test; otherwise return NEEDS_HUMAN explaining the test gap.
 
 Return exactly one JSON object, no markdown fences and no prose, with these keys:
 finding_id, verdict, confidence, evidence, concerns, required_follow_up.
@@ -261,23 +262,65 @@ if ! extract_json "$last_message" "$verify_json" "$FINDING_ID" && ! extract_json
   exit 1
 fi
 
-python3 - "$verify_json" <<'PY'
+python3 - "$verify_json" "$finding_json" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+finding = json.loads(Path(sys.argv[2]).read_text())
 data = json.loads(path.read_text())
 verdict = str(data.get("verdict", "")).upper()
 evidence = [str(item).strip() for item in (data.get("evidence") or []) if str(item).strip()]
 concerns = [str(item).strip() for item in (data.get("concerns") or []) if str(item).strip()]
 follow_up = [str(item).strip() for item in (data.get("required_follow_up") or []) if str(item).strip()]
 
+def looks_like_test_path(value: str) -> bool:
+    lowered = value.replace("\\", "/").lower()
+    name = Path(lowered).name
+    return (
+        "/tests/" in f"/{lowered}"
+        or "/test/" in f"/{lowered}"
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or name.endswith("_test.go")
+        or name.endswith(".test.ts")
+        or name.endswith(".test.js")
+        or name.endswith(".spec.ts")
+        or name.endswith(".spec.js")
+        or "spec." in name
+    )
+
+def expects_behavioral_coverage(item: dict) -> bool:
+    checks = [str(check).lower() for check in (item.get("expected_checks") or [])]
+    if any(token in check for check in checks for token in ("unittest", "pytest", "npm test", "pnpm test", "yarn test", "go test", "cargo test")):
+        return True
+    criteria = [str(entry) for entry in (item.get("acceptance_criteria") or [])]
+    pattern = re.compile(
+        r"\b(unit\s*tests?|tests?|asserts?|unittest|pytest|specs?)\b|"
+        r"\b(add|update|write|cover|include).{0,40}\b(test|assert|spec)s?\b|"
+        r"\bregression\b",
+        re.IGNORECASE,
+    )
+    return any(pattern.search(entry) for entry in criteria)
+
 errors = []
 if not evidence:
     errors.append("evidence must be a non-empty list explaining the verdict")
 if verdict == "NEEDS_HUMAN" and not concerns and not follow_up:
     errors.append("NEEDS_HUMAN requires non-empty concerns or required_follow_up")
+if verdict == "PASS" and expects_behavioral_coverage(finding):
+    changed = []
+    last_fix = finding.get("last_fix") if isinstance(finding.get("last_fix"), dict) else {}
+    raw_changed = last_fix.get("changed_files") or []
+    if isinstance(raw_changed, list):
+        changed = [str(entry) for entry in raw_changed]
+    if not any(looks_like_test_path(entry) for entry in changed):
+        errors.append(
+            "PASS rejected: acceptance criteria or expected checks imply behavioral coverage, "
+            "but last_fix.changed_files includes no test/spec file. Add a focused test or return NEEDS_HUMAN."
+        )
 if errors:
     print(f"deslop-verify: error: thin verifier verdict rejected for {verdict or 'UNKNOWN'}:", file=sys.stderr)
     for item in errors:

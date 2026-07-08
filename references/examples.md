@@ -68,6 +68,7 @@ Next: DSL-000002
 Stop file: absent
 Loop outcome
   Stop reason: no_eligible_findings
+  Priority note: P0/P1 clear; 2 P2 remain (not loop fuel at this priority)
   Verified this run:
     - DSL-000001 Share request validation
   Queued next: DSL-000002

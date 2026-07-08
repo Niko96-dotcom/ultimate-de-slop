@@ -59,8 +59,8 @@ def read_findings(path: Path) -> list[dict[str, Any]]:
     return findings
 
 
-def choose_next(findings: list[dict[str, Any]]) -> str | None:
-    priorities = ["P0", "P1", "P2"]
+def choose_next(findings: list[dict[str, Any]], priorities: list[str] | None = None) -> str | None:
+    priorities = priorities or ["P0", "P1", "P2"]
     effort_rank = {"small": 0, "medium": 1, "large": 2}
     eligible = [
         item
@@ -78,6 +78,35 @@ def choose_next(findings: list[dict[str, Any]]) -> str | None:
         )
     )
     return str(eligible[0].get("id"))
+
+
+def parse_priority_list(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item).strip().upper() for item in raw if str(item).strip()]
+    return [part.strip().upper() for part in str(raw).split(",") if part.strip()]
+
+
+def remaining_by_severity(findings: list[dict[str, Any]], status: str = "accepted") -> dict[str, int]:
+    counts = Counter(
+        str(item.get("severity", "unknown")).upper()
+        for item in findings
+        if item.get("status") == status
+    )
+    return dict(sorted(counts.items()))
+
+
+def priority_note_for(findings: list[dict[str, Any]], outcome: dict[str, Any]) -> str | None:
+    priorities = parse_priority_list(outcome.get("priority"))
+    accepted = remaining_by_severity(findings, "accepted")
+    p2_count = accepted.get("P2", 0)
+    if not p2_count or not priorities or "P2" in priorities:
+        return None
+    high_remaining = sum(accepted.get(level, 0) for level in priorities)
+    if high_remaining == 0:
+        return f"P0/P1 clear; {p2_count} P2 remain (not loop fuel at this priority)"
+    return None
 
 
 def score(root: Path, findings: list[dict[str, Any]]) -> int:
@@ -176,15 +205,21 @@ def build_loop_summary(
         ]
 
     stop_reason = outcome.get("stop_reason") or stop.get("reason")
+    priorities = parse_priority_list(outcome.get("priority"))
+    next_for_priority = choose_next(findings, priorities) if priorities else choose_next(findings)
+    note = priority_note_for(findings, outcome)
+    accepted_remaining = remaining_by_severity(findings, "accepted")
     return {
+        "accepted_remaining": accepted_remaining,
         "false_positives": summarize_findings(findings, "false_positive"),
         "halt_finding_id": outcome.get("halt_finding_id"),
         "halt_status": outcome.get("halt_status"),
         "iterations_completed": outcome.get("iterations_completed"),
         "max_iterations": outcome.get("max_iterations"),
         "needs_human": summarize_findings(findings, "needs_human"),
-        "next": choose_next(findings),
+        "next": next_for_priority,
         "priority": outcome.get("priority"),
+        "priority_note": note,
         "runner_diagnostic": latest_runner_diagnostic(root),
         "stop_reason": stop_reason,
         "verified": verified_rows,
@@ -198,7 +233,13 @@ def build_status(root: Path) -> dict[str, Any]:
         state = {}
     by_status = Counter(str(item.get("status", "unknown")) for item in findings)
     by_severity = Counter(str(item.get("severity", "unknown")).upper() for item in findings)
-    next_id = choose_next(findings)
+    loop_summary = build_loop_summary(root, findings, state)
+    # Prefer the priority-scoped next from loop_summary, including explicit None
+    # when the recorded outcome priority has no eligible findings.
+    if "next" in loop_summary:
+        next_id = loop_summary.get("next")
+    else:
+        next_id = choose_next(findings)
     stop_file = root / ".deslop" / "stop"
     return {
         "score": score(root, findings),
@@ -206,30 +247,52 @@ def build_status(root: Path) -> dict[str, Any]:
         "counts_by_severity": dict(sorted(by_severity.items())),
         "next": next_id,
         "last_runs": last_runs(root),
-        "loop_summary": build_loop_summary(root, findings, state),
+        "loop_summary": loop_summary,
         "stop_file": {"present": stop_file.exists(), "path": ".deslop/stop"},
-        "suggested_commands": suggested(next_id),
+        "suggested_commands": suggested(next_id, loop_summary),
     }
 
 
-def suggested(next_id: str | None) -> list[str]:
+def suggested(next_id: str | None, loop_summary: dict[str, Any] | None = None) -> list[str]:
+    summary = loop_summary or {}
+    needs_human = summary.get("needs_human") or []
+    commands: list[str] = []
+    if needs_human:
+        finding_id = needs_human[0].get("id")
+        commands.append(f"scripts/deslop-resume.py {finding_id} --as accepted --reason 'human approved retry'")
     if next_id:
-        return [
+        commands.extend(
+            [
+                "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1",
+                f"scripts/deslop-fix.sh {next_id}",
+                f"scripts/deslop-run-checks.sh {next_id}",
+                f"scripts/deslop-verify.sh {next_id}",
+                f"scripts/deslop-finalize.py {next_id}",
+            ]
+        )
+        return commands
+    if summary.get("priority_note"):
+        commands.extend(
+            [
+                "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1,P2",
+                "scripts/deslop-status.py",
+            ]
+        )
+        return commands
+    commands.extend(
+        [
             "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1",
-            f"scripts/deslop-fix.sh {next_id}",
-            f"scripts/deslop-run-checks.sh {next_id}",
-            f"scripts/deslop-verify.sh {next_id}",
-            f"scripts/deslop-finalize.py {next_id}",
+            "scripts/deslop-review.sh",
         ]
-    return [
-        "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1",
-        "scripts/deslop-review.sh",
-    ]
+    )
+    return commands
 
 
 def print_loop_summary(summary: dict[str, Any]) -> None:
     print("Loop outcome")
     print(f"  Stop reason: {summary.get('stop_reason') or 'NONE'}")
+    if summary.get("priority_note"):
+        print(f"  Priority note: {summary['priority_note']}")
     verified = summary.get("verified") or []
     if verified:
         print("  Verified this run:")
