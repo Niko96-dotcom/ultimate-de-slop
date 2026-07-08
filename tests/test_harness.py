@@ -1752,6 +1752,163 @@ print(text)
             self.assertIn("Helpers already share one validator", result.stdout)
             self.assertEqual(read_finding(root, "DSL-000001")["status"], "false_positive")
 
+    def test_record_outcome_writes_loop_outcome(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            verified = minimal_finding("DSL-000001")
+            verified["status"] = "verified"
+            verified["title"] = "Share request validation"
+            needs = minimal_finding("DSL-000002")
+            needs["status"] = "needs_human"
+            needs["title"] = "Auth rewrite needs review"
+            needs["verification"] = {
+                "concerns": ["Ambiguous logout semantics"],
+                "required_follow_up": ["Ask product"],
+                "evidence": ["Touches session store"],
+            }
+            false_pos = minimal_finding("DSL-000003")
+            false_pos["status"] = "false_positive"
+            false_pos["title"] = "Speculative unused helper"
+            false_pos["verification"] = {"evidence": ["Helper is used by import path"]}
+            queued = minimal_finding("DSL-000004")
+            queued["status"] = "accepted"
+            queued["title"] = "Queued cleanup"
+            write_findings(root, verified, needs, false_pos, queued)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-record-outcome.py"),
+                    "--stop-reason",
+                    "finalize_halt",
+                    "--max-iterations",
+                    "5",
+                    "--priority",
+                    "P0,P1",
+                    "--iterations-completed",
+                    "1",
+                    "--halt-finding-id",
+                    "DSL-000002",
+                    "--halt-status",
+                    "needs_human",
+                    "--baseline-verified-ids",
+                    "",
+                ],
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((root / ".deslop" / "state.json").read_text())
+            outcome = state["loop_outcome"]
+            self.assertEqual(outcome["stop_reason"], "finalize_halt")
+            self.assertEqual(outcome["verified_ids"], ["DSL-000001"])
+            self.assertEqual(outcome["halt_finding_id"], "DSL-000002")
+            self.assertEqual(outcome["halt_status"], "needs_human")
+            self.assertEqual(state["stop"]["reason"], "finalize_halt")
+
+    def test_status_includes_loop_summary(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            verified = minimal_finding("DSL-000001")
+            verified["status"] = "verified"
+            verified["title"] = "Share request validation"
+            needs = minimal_finding("DSL-000002")
+            needs["status"] = "needs_human"
+            needs["title"] = "Auth rewrite needs review"
+            needs["verification"] = {
+                "concerns": ["Ambiguous logout semantics"],
+                "required_follow_up": ["Ask product"],
+                "evidence": ["Touches session store"],
+            }
+            false_pos = minimal_finding("DSL-000003")
+            false_pos["status"] = "false_positive"
+            false_pos["title"] = "Speculative unused helper"
+            false_pos["verification"] = {"evidence": ["Helper is used by import path"]}
+            write_findings(root, verified, needs, false_pos)
+            run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop-record-outcome.py"),
+                    "--stop-reason",
+                    "no_eligible_findings",
+                    "--max-iterations",
+                    "5",
+                    "--priority",
+                    "P0,P1",
+                    "--iterations-completed",
+                    "2",
+                    "--baseline-verified-ids",
+                    "",
+                ],
+                cwd=root,
+                check=True,
+            )
+
+            result = run([sys.executable, str(SCRIPT_DIR / "deslop-status.py"), "--json"], cwd=root)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            status = json.loads(result.stdout)
+            summary = status["loop_summary"]
+            self.assertEqual(summary["stop_reason"], "no_eligible_findings")
+            self.assertEqual(summary["verified"], [{"id": "DSL-000001", "title": "Share request validation"}])
+            self.assertEqual(summary["needs_human"][0]["id"], "DSL-000002")
+            self.assertIn("Ambiguous logout semantics", summary["needs_human"][0]["details"])
+            self.assertEqual(summary["false_positives"][0]["id"], "DSL-000003")
+
+            text = run([sys.executable, str(SCRIPT_DIR / "deslop-status.py")], cwd=root)
+            self.assertEqual(text.returncode, 0, text.stderr + text.stdout)
+            self.assertIn("Loop outcome", text.stdout)
+            self.assertIn("no_eligible_findings", text.stdout)
+            self.assertIn("DSL-000001", text.stdout)
+            self.assertIn("Needs human", text.stdout)
+            self.assertIn("Ambiguous logout semantics", text.stdout)
+
+    def test_loop_records_no_eligible_findings_outcome(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            (root / ".gitignore").write_text(".deslop/\nfake-bin/\n")
+            run(["git", "add", "sample.py", ".gitignore"], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            write_findings(root)
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "codex",
+                """#!/usr/bin/env bash
+set -euo pipefail
+last=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    last="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+payload='{"repo_summary":"empty","review_wave_id":"wave-1","partitions_reviewed":["all"],"findings":[]}'
+if [ -n "$last" ]; then
+  printf '%s\\n' "$payload" > "$last"
+fi
+printf '%s\\n' "$payload"
+""",
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-loop.sh"), "--max-iterations", "1", "--priority", "P0,P1"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "codex"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            state = json.loads((root / ".deslop" / "state.json").read_text())
+            self.assertEqual(state["loop_outcome"]["stop_reason"], "no_eligible_findings")
+            self.assertIn("no_eligible_findings", result.stdout)
+            self.assertIn("Loop outcome", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

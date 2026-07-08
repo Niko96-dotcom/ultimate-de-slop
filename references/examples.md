@@ -62,8 +62,21 @@
 ```text
 Ultimate De-Slop Status
 Score: 87
-Findings: accepted=2 verified=1 blocked=0
+Findings by status: {'accepted': 2, 'verified': 1}
+Findings by severity: {'P1': 3}
 Next: DSL-000002
 Stop file: absent
-Suggested: scripts/deslop-fix.sh DSL-000002
+Loop outcome
+  Stop reason: no_eligible_findings
+  Verified this run:
+    - DSL-000001 Share request validation
+  Queued next: DSL-000002
+  Needs human:
+    - DSL-000004 Auth rewrite needs review
+      Ambiguous logout semantics
+  False positives:
+    - DSL-000003 Speculative unused helper
+      Helper is used by import path
+Suggested commands:
+  scripts/deslop-fix.sh DSL-000002
 ```

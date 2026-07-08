@@ -13,7 +13,25 @@
     "current_iteration": {"type": "integer"},
     "stop": {"type": "object"},
     "last_run": {"type": ["object", "null"]},
-    "open_findings_summary": {"type": "object"}
+    "open_findings_summary": {"type": "object"},
+    "loop_outcome": {
+      "type": "object",
+      "description": "Optional summary of the most recent bounded loop exit.",
+      "properties": {
+        "at": {"type": "string"},
+        "stop_reason": {
+          "type": "string",
+          "enum": ["stop_file", "no_eligible_findings", "max_iterations_reached", "finalize_halt"]
+        },
+        "iterations_completed": {"type": "integer"},
+        "max_iterations": {"type": "integer"},
+        "priority": {"type": "string"},
+        "verified_ids": {"type": "array", "items": {"type": "string"}},
+        "halt_finding_id": {"type": ["string", "null"]},
+        "halt_status": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": true
 }
