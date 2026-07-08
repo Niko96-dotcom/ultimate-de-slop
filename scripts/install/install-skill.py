@@ -222,6 +222,20 @@ def install_opencode_assets(source: Path, scope: str, home: Path, project_dir: P
     return actions
 
 
+def cursor_config_root(scope: str, home: Path, project_dir: Path) -> Path:
+    if scope == "global":
+        return home / ".cursor"
+    return project_dir / ".cursor"
+
+
+def install_cursor_assets(source: Path, scope: str, home: Path, project_dir: Path, dry_run: bool) -> list[str]:
+    config_root = cursor_config_root(scope, home, project_dir)
+    template_root = source / "templates" / "cursor"
+    actions: list[str] = []
+    actions.extend(copy_template_files(template_root / "commands", config_root / "commands", dry_run, "cursor command"))
+    return actions
+
+
 def install(args: argparse.Namespace) -> int:
     source = skill_root()
     home = Path(args.home or os.environ.get("HOME", "~")).expanduser().resolve()
@@ -257,6 +271,12 @@ def install(args: argparse.Namespace) -> int:
             print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
         if extra_actions:
             print("OpenCode loads agent, command, and skill files at startup; restart OpenCode if it is already running.")
+    if args.harness == "cursor":
+        extra_actions = install_cursor_assets(source, args.scope, home, project_dir, args.dry_run)
+        for action in extra_actions:
+            print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
+        if extra_actions:
+            print("Cursor loads command files from .cursor/commands; restart or reload Cursor rules if needed.")
 
     scripts_dir = target / "scripts"
     runner_harness = layout["runner_harness"]

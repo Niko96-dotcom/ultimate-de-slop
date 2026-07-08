@@ -39,6 +39,9 @@ if [ ! -f "$ROOT/.deslop/config.json" ]; then
   "codex_idle_timeout_seconds": 1200,
   "codex_terminate_grace_seconds": 10,
   "confidence_thresholds": {"P0": 0.70, "P1": 0.75, "P2": 0.85},
+  "loop_priority": "P0,P1",
+  "review_every": 1,
+  "empty_review_waves_required": 2,
   "ignored_paths": ["node_modules", ".git", "dist", "build", "coverage", "vendor", ".next", ".turbo", ".venv", "__pycache__"],
   "commit_by_default": false,
   "auto_revert_by_default": false
@@ -72,7 +75,12 @@ if not state_path.exists():
         "current_iteration": 0,
         "stop": {"requested": False, "reason": None, "path": ".deslop/stop"},
         "last_run": None,
-        "open_findings_summary": {}
+        "open_findings_summary": {},
+        "loop_progress": {
+            "consecutive_empty_review_waves": 0,
+            "partition_index": 0,
+            "partitions": []
+        }
     }
     state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
 PY

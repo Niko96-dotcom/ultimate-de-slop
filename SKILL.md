@@ -47,6 +47,12 @@ Bounded loop:
 scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1
 ```
 
+Continue while work remains:
+
+```sh
+scripts/deslop-continue.sh
+```
+
 Default de-slop request:
 
 ```sh
@@ -67,6 +73,16 @@ Default confidence thresholds are P0 >= 0.70, P1 >= 0.75, and P2 >= 0.85.
 ## Operating Rules
 
 Before any review or fix, run `scripts/deslop-doctor.py` when harness/auth readiness is uncertain, then run init so `.deslop/config.json`, `.deslop/state.json`, `.deslop/findings.jsonl`, `.deslop/inventory.json`, and `.deslop/index.md` exist. Use `.deslop/index.md` and `.deslop/inventory.json` to partition the repo.
+
+Loop defaults persist in `.deslop/config.json` (`loop_priority`, `max_iterations`, `review_every`, `empty_review_waves_required`). CLI flags override and refresh those values on each loop run.
+
+Partition-scoped review keeps reviewer context bounded:
+
+```sh
+scripts/deslop-review.sh --partition src
+```
+
+The loop walks `inventory.json` risk partitions automatically when the accepted queue is empty.
 
 Set `DESLOP_HARNESS=<harness>` to override the child-agent harness. When unset, the harness is read from `.ultimate-de-slop-install.json` in the installed skill directory (for example `cursor` after `install-cursor.sh`); otherwise the default is `codex`.
 Supported harness values are `codex`, `claude`, `opencode`, `cursor`, `pi`, `commandcode`, `hermes`, and `openclaw`.
@@ -93,6 +109,16 @@ For multi-iteration runs without `--commit`, the verifier must use the per-findi
 
 Stop when no accepted P0/P1 findings remain after a review wave, two consecutive review waves find no new accepted high-confidence P0/P1 findings, remaining P2s are low-value or below threshold, max iterations or attempts are reached, `.deslop/stop` exists, the tree is unexpectedly dirty, verification deadlocks, or human review is required.
 
+## Parent-Agent Continue Rules
+
+When you are the parent agent (Cursor, Claude Code, OpenCode, etc.) orchestrating the harness:
+
+1. Run `scripts/deslop-loop.sh` or `scripts/deslop-continue.sh`; do not stop after a single child-agent call.
+2. After every loop/continue command, run `scripts/deslop-status.py`.
+3. Do not load `.deslop/runs/` or raw agent logs into chat unless debugging.
+4. If `next` is not `NONE`, or the loop has not yet hit two consecutive empty review waves at the chosen priority, run `scripts/deslop-continue.sh` again in the same task.
+5. Stop only when `loop_outcome.stop_reason` is `no_eligible_findings`, `max_iterations_reached`, `finalize_halt`, or `.deslop/stop` exists.
+
 ## Multi-Session Loops and Context
 
 The loop is designed to run across many sessions without carrying chat history forward.
@@ -108,17 +134,18 @@ Typical multi-session flow:
 scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1
 # later, in a new session:
 scripts/deslop-status.py
-scripts/deslop-next.py --priority P0,P1
-scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1
+scripts/deslop-continue.sh
 ```
 
 If a run stops after one fix, check `scripts/deslop-status.py` for `loop_outcome.stop_reason`:
 
-- `no_eligible_findings`: the queue at the chosen priority is empty. That is normal after a successful fix when no more accepted P0/P1 remain. Re-run the loop to start another review wave, or widen priority to include P2.
+- `no_eligible_findings`: two consecutive review waves found no new accepted findings at the chosen priority. Re-run with `--priority P0,P1,P2` if you want medium-tier cleanup.
 - `finalize_halt`: verifier returned FAIL/NEEDS_HUMAN or checks failed. Resume with `scripts/deslop-resume.py` after human review if appropriate.
 - `max_iterations_reached`: raise `--max-iterations`.
 
-Use `--review-every N` to drain several queued findings before spending another full-repo review. Example: `--review-every 3` fixes up to three accepted findings before the next review wave.
+The loop auto-allows a dirty tree when verified-but-uncommitted fixes are already present. Otherwise pass `--allow-dirty` intentionally.
+
+Use `--review-every N` to drain several queued findings before spending another review wave. Example: `--review-every 3` fixes up to three accepted findings before the next review wave.
 
 ## Default Stop Priority
 

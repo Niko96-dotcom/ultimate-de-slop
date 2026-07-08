@@ -263,6 +263,7 @@ def suggested(next_id: str | None, loop_summary: dict[str, Any] | None = None) -
     if next_id:
         commands.extend(
             [
+                "scripts/deslop-continue.sh",
                 "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1",
                 f"scripts/deslop-fix.sh {next_id}",
                 f"scripts/deslop-run-checks.sh {next_id}",
@@ -281,6 +282,7 @@ def suggested(next_id: str | None, loop_summary: dict[str, Any] | None = None) -
         return commands
     commands.extend(
         [
+            "scripts/deslop-continue.sh",
             "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1",
             "scripts/deslop-review.sh",
         ]

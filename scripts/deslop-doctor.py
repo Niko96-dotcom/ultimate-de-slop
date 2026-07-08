@@ -200,7 +200,7 @@ def suggested(ready: bool, harness: str) -> list[str]:
     return [
         "scripts/deslop-init.sh",
         "scripts/deslop-status.py",
-        "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1",
+        "scripts/deslop-continue.sh",
     ]
 
 

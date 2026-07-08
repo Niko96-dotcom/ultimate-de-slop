@@ -3,17 +3,36 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: deslop-review.sh [--help]
+Usage: deslop-review.sh [--partition PATH] [--help]
 
-Run a read-only whole-codebase ultimate-de-slop review, extract JSON, and arbitrate findings.
+Run a read-only ultimate-de-slop review, extract JSON, and arbitrate findings.
 This invokes the harness selected by DESLOP_HARNESS or the install marker for this skill copy, defaulting to codex, and does not edit product code.
+When --partition is set, review only that repo-relative partition to keep reviewer context bounded.
 EOF
 }
 
-if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  usage
-  exit 0
-fi
+PARTITION=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --partition)
+      PARTITION="${2:-}"
+      if [ -z "$PARTITION" ]; then
+        printf 'deslop-review: error: --partition requires a path\n' >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    *)
+      printf 'deslop-review: error: unknown option: %s\n' "$1" >&2
+      exit 1
+      ;;
+  esac
+done
 
 extract_json() {
   python3 - "$1" "$2" <<'PY'
@@ -116,7 +135,46 @@ last_message="$run_dir/last-message.txt"
 runner_json="$run_dir/runner.json"
 schema="$SCRIPT_DIR/../references/review.schema.json"
 
-cat > "$prompt" <<'EOF'
+if [ -n "$PARTITION" ]; then
+  partition_label="$PARTITION"
+  cat > "$prompt" <<EOF
+You are performing a bounded ultimate-de-slop review for one repo partition, not a latest-diff review. Review ONLY the partition at repo-relative path: ${partition_label}
+
+Use \`.deslop/index.md\` and \`.deslop/inventory.json\` for orientation, but limit findings to files under ${partition_label}. Do not load skill files recursively; this harness already selected the reviewer role. Use these perspectives where useful:
+- architecture/maintainability
+- correctness/bug risk
+- testability
+- security/boundaries
+- dependency/coupling
+
+Treat \`.deslop\` as harness state. Read only \`.deslop/index.md\` and \`.deslop/inventory.json\`; Do not inspect \`.deslop/runs\`, \`.deslop/tmp\`, raw outputs, runner logs, or generated review/fix/check/verify artifacts as product code.
+Do not edit files. Return at most 5 findings per reviewer. Only report severity P0/P1/P2. No style nits.
+
+Return exactly one JSON object, no markdown fences and no prose, with this top-level shape:
+{
+  "repo_summary": "short summary",
+  "review_wave_id": "wave-YYYYMMDDTHHMMSSZ",
+  "partitions_reviewed": ["${partition_label}"],
+  "findings": []
+}
+
+Each finding object must use these exact keys and value types:
+id, title, severity, confidence, category, status, files, evidence, why_it_matters,
+proposed_fix, acceptance_criteria, expected_checks, expected_checks_explanation,
+no_expected_checks_reason, checks_explanation, risk, dependencies, estimated_effort,
+reviewer, created_at, updated_at.
+
+Use \`severity\`, not \`priority\`; use \`estimated_effort\`, not \`effort\`; use \`status\` as \`candidate\`.
+Use \`confidence\` as a number from 0.0 to 1.0, not a label such as "high".
+Use \`risk\` as one of: low, medium, high. Use \`estimated_effort\` as one of: small, medium, large.
+Use arrays of strings for \`files\`, \`acceptance_criteria\`, \`expected_checks\`, and \`dependencies\`.
+Each evidence item must be an object with string fields: file, lines, symbol, claim.
+Evidence must be concrete enough for a fixer to act: include exact line ranges or a symbol when possible, and quote the risky code shape in claim. Do not report filename-only or "likely/appears/flagged candidate" findings; they will be rejected by arbitration.
+Expected checks must be simple JSON-safe command strings. Avoid shell redirection, pipes, and nested quotes in expected_checks; if a useful check needs complex quoting, leave expected_checks empty and explain it in no_expected_checks_reason.
+Return ONLY JSON matching the review schema.
+EOF
+else
+  cat > "$prompt" <<'EOF'
 You are performing a whole-codebase ultimate-de-slop review, not a latest-diff review. Review the repo by partitions using `.deslop/index.md` and `.deslop/inventory.json`. Do not load skill files recursively; this harness already selected the reviewer role. Use these perspectives where useful:
 - architecture/maintainability
 - correctness/bug risk
@@ -150,6 +208,7 @@ Evidence must be concrete enough for a fixer to act: include exact line ranges o
 Expected checks must be simple JSON-safe command strings. Avoid shell redirection, pipes, and nested quotes in expected_checks; if a useful check needs complex quoting, leave expected_checks empty and explain it in no_expected_checks_reason.
 Return ONLY JSON matching the review schema.
 EOF
+fi
 
 set +e
 "$SCRIPT_DIR/deslop-agent-runner.py" --root "$ROOT" --prompt "$prompt" --raw-output "$raw" --last-message "$last_message" --runner-json "$runner_json" --schema "$schema" --sandbox read-only --kind review

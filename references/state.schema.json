@@ -14,6 +14,16 @@
     "stop": {"type": "object"},
     "last_run": {"type": ["object", "null"]},
     "open_findings_summary": {"type": "object"},
+    "loop_progress": {
+      "type": "object",
+      "description": "Optional partition review progress for the bounded loop.",
+      "properties": {
+        "consecutive_empty_review_waves": {"type": "integer"},
+        "partition_index": {"type": "integer"},
+        "partitions": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
     "loop_outcome": {
       "type": "object",
       "description": "Optional summary of the most recent bounded loop exit.",

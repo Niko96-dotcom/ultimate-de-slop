@@ -2343,6 +2343,135 @@ print(text)
             self.assertIn("Priority note", text.stdout)
             self.assertIn("P2 remain", text.stdout)
 
+    def test_loop_requires_two_empty_review_waves(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            (root / ".gitignore").write_text(".deslop/\nfake-bin/\n")
+            run(["git", "add", "sample.py", ".gitignore"], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "codex",
+                """#!/usr/bin/env bash
+set -euo pipefail
+last=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    last="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+state_file=".deslop/fake-review-count.txt"
+count=0
+if [ -f "$state_file" ]; then
+  count="$(cat "$state_file")"
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$state_file"
+payload='{"repo_summary":"empty","review_wave_id":"wave-1","partitions_reviewed":["."],"findings":[]}'
+if [ -n "$last" ]; then
+  printf '%s\\n' "$payload" > "$last"
+fi
+printf '%s\\n' "$payload"
+""",
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-loop.sh"), "--max-iterations", "1", "--priority", "P0,P1", "--empty-review-waves", "2"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "codex"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertGreaterEqual(int((root / ".deslop" / "fake-review-count.txt").read_text()), 2)
+            state = json.loads((root / ".deslop" / "state.json").read_text())
+            self.assertEqual(state["loop_progress"]["consecutive_empty_review_waves"], 2)
+            self.assertEqual(state["loop_outcome"]["stop_reason"], "no_eligible_findings")
+
+    def test_loop_persists_settings_to_config(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            sys.path.insert(0, str(SCRIPT_DIR))
+            from deslop_loop_support import resolve_settings
+
+            settings = resolve_settings(
+                root,
+                max_iterations=7,
+                priority="P0,P1",
+                review_every=3,
+                empty_review_waves_required=2,
+                persist=True,
+            )
+            self.assertEqual(settings.max_iterations, 7)
+            self.assertEqual(settings.priority, "P0,P1")
+            self.assertEqual(settings.review_every, 3)
+            config = json.loads((root / ".deslop" / "config.json").read_text())
+            self.assertEqual(config["loop_priority"], "P0,P1")
+            self.assertEqual(config["max_iterations"], 7)
+            self.assertEqual(config["review_every"], 3)
+
+    def test_review_partition_scopes_prompt(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("value = 1\n")
+            run(["git", "add", "src"], cwd=root, check=True)
+            run(["git", "commit", "-m", "src"], cwd=root, check=True)
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "codex",
+                """#!/usr/bin/env bash
+set -euo pipefail
+last=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then
+    last="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+payload='{"repo_summary":"src only","review_wave_id":"wave-src","partitions_reviewed":["src"],"findings":[]}'
+if [ -n "$last" ]; then
+  printf '%s\\n' "$payload" > "$last"
+fi
+printf '%s\\n' "$payload"
+""",
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-review.sh"), "--partition", "src"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "codex"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            prompt = sorted((root / ".deslop" / "runs").glob("*-review/prompt.txt"))[-1].read_text()
+            self.assertIn("Review ONLY the partition", prompt)
+            self.assertIn("src", prompt)
+
+    def test_cursor_installer_installs_command(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            home = root / "home"
+            result = run(
+                [str(SCRIPT_DIR / "install" / "install-cursor.sh"), "--home", str(home)],
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            command = home / ".cursor" / "commands" / "ultimate-de-slop.md"
+            self.assertTrue(command.exists())
+            self.assertIn("deslop-continue.sh", command.read_text())
+
     def test_fix_marks_needs_human_when_change_budget_exceeded(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
