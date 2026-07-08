@@ -230,6 +230,8 @@ You are running as the selected Ultimate De-Slop verifier role. Do not delegate 
 
 Do not edit files. Verify the original finding against the check output and the per-finding fix attempt context. Base the finding-specific verdict on the delta introduced during this fix attempt. The current git diff may include earlier verified but uncommitted findings; use it only for interaction/regression context and do not fail solely because unrelated baseline changes are present. Judge whether the fix truly satisfies acceptance criteria, whether behavior stayed intact, and whether the patch created new slop. Return PASS, FAIL, NEEDS_HUMAN, or FALSE_POSITIVE.
 
+Every verdict requires non-empty evidence. NEEDS_HUMAN requires non-empty concerns or required_follow_up explaining what a human must decide. FALSE_POSITIVE evidence must explain why the original finding was invalid.
+
 Return exactly one JSON object, no markdown fences and no prose, with these keys:
 finding_id, verdict, confidence, evidence, concerns, required_follow_up.
 
@@ -263,7 +265,25 @@ python3 - "$verify_json" <<'PY'
 import json
 import sys
 from pathlib import Path
-data = json.loads(Path(sys.argv[1]).read_text())
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+verdict = str(data.get("verdict", "")).upper()
+evidence = [str(item).strip() for item in (data.get("evidence") or []) if str(item).strip()]
+concerns = [str(item).strip() for item in (data.get("concerns") or []) if str(item).strip()]
+follow_up = [str(item).strip() for item in (data.get("required_follow_up") or []) if str(item).strip()]
+
+errors = []
+if not evidence:
+    errors.append("evidence must be a non-empty list explaining the verdict")
+if verdict == "NEEDS_HUMAN" and not concerns and not follow_up:
+    errors.append("NEEDS_HUMAN requires non-empty concerns or required_follow_up")
+if errors:
+    print(f"deslop-verify: error: thin verifier verdict rejected for {verdict or 'UNKNOWN'}:", file=sys.stderr)
+    for item in errors:
+        print(f"  - {item}", file=sys.stderr)
+    raise SystemExit(1)
+
 print(f"Verifier verdict: {data.get('verdict', 'UNKNOWN')}")
 PY
 printf 'Verify JSON: %s\n' "$verify_json"

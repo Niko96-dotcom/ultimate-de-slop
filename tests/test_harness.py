@@ -80,6 +80,61 @@ def latest_run_file(root: Path, suffix: str, finding_id: str, filename: str) -> 
     return matches[-1]
 
 
+def prepare_verify_fixture(root: Path, finding_id: str = "DSL-000001") -> Path:
+    fix_dir = root / ".deslop" / "runs" / f"20260531T000000Z-fix-{finding_id}"
+    fix_dir.mkdir(parents=True)
+    status_before = fix_dir / "git-status-before.txt"
+    diff_before = fix_dir / "git-diff-before.patch"
+    status_after = fix_dir / "git-status-after.txt"
+    diff_after = fix_dir / "git-diff-after.patch"
+    attempt_delta = fix_dir / "git-diff-attempt.patch"
+    status_before.write_text(" M sample.py\n")
+    diff_before.write_text("")
+    status_after.write_text(" M sample.py\n")
+    diff_after.write_text("diff --git a/sample.py b/sample.py\n+value = 2\n")
+    attempt_delta.write_text("+diff --git a/sample.py b/sample.py\n++value = 2\n")
+    finding = minimal_finding(finding_id, files=["sample.py"])
+    finding["status"] = "fixed_unverified"
+    finding["last_fix"] = {
+        "snapshot_paths": {
+            "status_before": str(status_before),
+            "diff_before": str(diff_before),
+            "status_after": str(status_after),
+            "diff_after": str(diff_after),
+            "attempt_delta": str(attempt_delta),
+        }
+    }
+    write_findings(root, finding)
+
+    checks_dir = root / ".deslop" / "runs" / f"20260531T000100Z-checks-{finding_id}"
+    checks_dir.mkdir()
+    checks_path = checks_dir / "checks.json"
+    checks_path.write_text(
+        json.dumps({"finding_id": finding_id, "status": "passed", "results": []}) + "\n"
+    )
+    return checks_path
+
+
+def write_fake_codex_verify(fake_bin: Path, payload: dict[str, object]) -> Path:
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    fake_codex = fake_bin / "codex"
+    fake_codex.write_text(
+        f"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+payload = {json.dumps(payload)}
+text = json.dumps(payload)
+if "--output-last-message" in sys.argv:
+    Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text(text + "\\n")
+print(text)
+"""
+    )
+    fake_codex.chmod(0o755)
+    return fake_codex
+
+
 def minimal_finding(
     finding_id: str,
     *,
@@ -1517,6 +1572,90 @@ print(text)
             self.assertIn("You are running as the selected Ultimate De-Slop verifier role", prompt)
             self.assertIn("finding_id, verdict, confidence, evidence, concerns, required_follow_up", prompt)
             self.assertNotIn("Use deslop_verifier if available", prompt)
+
+    def test_verify_rejects_needs_human_without_concerns_or_follow_up(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            checks_path = prepare_verify_fixture(root)
+            fake_bin = root / "fake-bin"
+            write_fake_codex_verify(
+                fake_bin,
+                {
+                    "finding_id": "DSL-000001",
+                    "verdict": "NEEDS_HUMAN",
+                    "confidence": 0.9,
+                    "evidence": ["patch touches auth boundary"],
+                    "concerns": [],
+                    "required_follow_up": [],
+                },
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-verify.sh"), "--checks-json", str(checks_path), "DSL-000001"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("NEEDS_HUMAN", result.stderr)
+            self.assertRegex(result.stderr, r"concerns|required_follow_up")
+
+    def test_verify_rejects_empty_evidence(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            checks_path = prepare_verify_fixture(root)
+            fake_bin = root / "fake-bin"
+            write_fake_codex_verify(
+                fake_bin,
+                {
+                    "finding_id": "DSL-000001",
+                    "verdict": "PASS",
+                    "confidence": 0.9,
+                    "evidence": [],
+                    "concerns": [],
+                    "required_follow_up": [],
+                },
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-verify.sh"), "--checks-json", str(checks_path), "DSL-000001"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("evidence", result.stderr)
+
+    def test_verify_accepts_false_positive_with_evidence(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            checks_path = prepare_verify_fixture(root)
+            fake_bin = root / "fake-bin"
+            write_fake_codex_verify(
+                fake_bin,
+                {
+                    "finding_id": "DSL-000001",
+                    "verdict": "FALSE_POSITIVE",
+                    "confidence": 0.92,
+                    "evidence": ["The duplicated helpers already share validate_request()."],
+                    "concerns": [],
+                    "required_follow_up": [],
+                },
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-verify.sh"), "--checks-json", str(checks_path), "DSL-000001"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            verify = json.loads(latest_run_file(root, "verify", "DSL-000001", "verify.json").read_text())
+            self.assertEqual(verify["verdict"], "FALSE_POSITIVE")
+            self.assertEqual(
+                verify["evidence"],
+                ["The duplicated helpers already share validate_request()."],
+            )
 
 
 if __name__ == "__main__":
