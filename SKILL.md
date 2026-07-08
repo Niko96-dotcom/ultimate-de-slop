@@ -68,7 +68,7 @@ Default confidence thresholds are P0 >= 0.70, P1 >= 0.75, and P2 >= 0.85.
 
 Before any review or fix, run `scripts/deslop-doctor.py` when harness/auth readiness is uncertain, then run init so `.deslop/config.json`, `.deslop/state.json`, `.deslop/findings.jsonl`, `.deslop/inventory.json`, and `.deslop/index.md` exist. Use `.deslop/index.md` and `.deslop/inventory.json` to partition the repo.
 
-Set `DESLOP_HARNESS=<harness>` to choose the child-agent harness. The default is `codex`.
+Set `DESLOP_HARNESS=<harness>` to override the child-agent harness. When unset, the harness is read from `.ultimate-de-slop-install.json` in the installed skill directory (for example `cursor` after `install-cursor.sh`); otherwise the default is `codex`.
 Supported harness values are `codex`, `claude`, `opencode`, `cursor`, `pi`, `commandcode`, `hermes`, and `openclaw`.
 Set `DESLOP_MODEL=<model>` to select a model for any harness. `DESLOP_CODEX_MODEL=<model>` remains supported for Codex compatibility.
 

@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: deslop-fix.sh [--allow-dirty] FINDING_ID
 
-Run a workspace-write fixer through DESLOP_HARNESS, defaulting to codex, for exactly one accepted finding.
+Run a workspace-write fixer through DESLOP_HARNESS or the install marker for this skill copy, defaulting to codex, for exactly one accepted finding.
 EOF
 }
 
@@ -110,6 +110,8 @@ PY
 }
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+: "${DESLOP_HARNESS:=$(python3 "$SCRIPT_DIR/deslop_harness.py" --print)}"
+export DESLOP_HARNESS
 ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || {
   printf 'deslop-fix: error: could not resolve git root; run from inside a git repository\n' >&2
   exit 1
@@ -336,8 +338,8 @@ done
 code=$?
 set -e
 if [ "$code" -ne 0 ]; then
-  mark_fix_failure "${DESLOP_HARNESS:-codex} fixer failed or timed out" "$code"
-  printf 'deslop-fix: error: %s fixer failed with exit code %s. Raw output: %s Runner: %s\n' "${DESLOP_HARNESS:-codex}" "$code" "$raw" "$runner_json" >&2
+  mark_fix_failure "${DESLOP_HARNESS} fixer failed or timed out" "$code"
+  printf 'deslop-fix: error: %s fixer failed with exit code %s. Raw output: %s Runner: %s\n' "$DESLOP_HARNESS" "$code" "$raw" "$runner_json" >&2
   exit "$code"
 fi
 

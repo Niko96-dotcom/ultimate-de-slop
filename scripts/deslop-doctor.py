@@ -12,6 +12,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from deslop_harness import resolve_harness
+
 
 HARNESS_CLI = {
     "claude": "claude",
@@ -71,7 +74,10 @@ def check_item(ok: bool, code: str, message: str, *, level: str | None = None) -
 
 
 def build_report(harness: str | None = None) -> dict[str, Any]:
-    harness_name = (harness or os.environ.get("DESLOP_HARNESS") or "codex").strip().lower()
+    harness_name = resolve_harness(
+        explicit=harness,
+        script_dir=Path(__file__).resolve().parent,
+    )
     checks: list[dict[str, Any]] = []
     if harness_name not in HARNESS_CLI:
         checks.append(

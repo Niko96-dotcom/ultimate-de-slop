@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1287,6 +1288,129 @@ print(json.dumps({"argv": sys.argv[1:]}))
             self.assertIn("--output-last-message", command)
             self.assertIn("--add-dir", command)
 
+    def test_resolve_harness_defaults_to_codex_without_marker(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            scripts_dir = root / "skill" / "scripts"
+            scripts_dir.mkdir(parents=True)
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop_harness.py"),
+                    "--print",
+                    "--script-dir",
+                    str(scripts_dir),
+                ],
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.stdout.strip(), "codex")
+
+    def test_resolve_harness_reads_install_marker(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            skill_root = root / "skill"
+            scripts_dir = skill_root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            marker = {
+                "installer": "ultimate-de-slop",
+                "harness": "cursor",
+                "scope": "global",
+                "installed_at": "2026-07-08T00:00:00Z",
+            }
+            (skill_root / ".ultimate-de-slop-install.json").write_text(json.dumps(marker) + "\n")
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop_harness.py"),
+                    "--print",
+                    "--script-dir",
+                    str(scripts_dir),
+                ],
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.stdout.strip(), "cursor")
+
+    def test_resolve_harness_env_overrides_install_marker(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            skill_root = root / "skill"
+            scripts_dir = skill_root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            marker = {"harness": "cursor"}
+            (skill_root / ".ultimate-de-slop-install.json").write_text(json.dumps(marker) + "\n")
+            result = run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "deslop_harness.py"),
+                    "--print",
+                    "--script-dir",
+                    str(scripts_dir),
+                ],
+                cwd=root,
+                env={"DESLOP_HARNESS": "opencode"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.stdout.strip(), "opencode")
+
+    def test_agent_runner_uses_install_marker_when_env_unset(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            skill_root = root / "installed-skill"
+            scripts_dir = skill_root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            shutil.copy(SCRIPT_DIR / "deslop_harness.py", scripts_dir / "deslop_harness.py")
+            shutil.copy(SCRIPT_DIR / "deslop-agent-runner.py", scripts_dir / "deslop-agent-runner.py")
+            marker = {"harness": "cursor"}
+            (skill_root / ".ultimate-de-slop-install.json").write_text(json.dumps(marker) + "\n")
+
+            prompt = root / "prompt.txt"
+            prompt.write_text("Return JSON.\n")
+            raw = root / "raw.txt"
+            last = root / "last.txt"
+            runner_json = root / "runner.json"
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "cursor-agent",
+                """#!/usr/bin/env python3
+import json
+import sys
+print(json.dumps({"argv": sys.argv[1:]}))
+""",
+            )
+
+            result = run(
+                [
+                    sys.executable,
+                    str(scripts_dir / "deslop-agent-runner.py"),
+                    "--root",
+                    str(root),
+                    "--prompt",
+                    str(prompt),
+                    "--raw-output",
+                    str(raw),
+                    "--last-message",
+                    str(last),
+                    "--runner-json",
+                    str(runner_json),
+                    "--schema",
+                    str(SKILL_DIR / "references" / "review.schema.json"),
+                    "--sandbox",
+                    "read-only",
+                    "--kind",
+                    "review",
+                ],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            diagnostics = json.loads(runner_json.read_text())
+            self.assertEqual(diagnostics["harness"], "cursor")
+            self.assertEqual(diagnostics["command"][0], "cursor-agent")
+
     def test_openclaw_adapter_fails_with_tested_actionable_mode_when_cli_exists(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
@@ -1352,7 +1476,7 @@ print(json.dumps({"argv": sys.argv[1:]}))
             self.assertTrue((target / "scripts" / "deslop-agent-runner.py").exists())
             self.assertFalse((target / ".deslop").exists())
             self.assertFalse((target / "tests" / "__pycache__").exists())
-            self.assertIn("DESLOP_HARNESS=claude", result.stdout)
+            self.assertIn("Harness auto-detected as claude", result.stdout)
 
     def test_opencode_global_installer_uses_config_home_and_installs_native_assets(self) -> None:
         tempdir, root = self.make_repo()

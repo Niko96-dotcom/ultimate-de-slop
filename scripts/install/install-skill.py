@@ -262,8 +262,9 @@ def install(args: argparse.Namespace) -> int:
     runner_harness = layout["runner_harness"]
     print("Invocation:")
     if runner_harness:
-        print(f"  DESLOP_HARNESS={runner_harness} {scripts_dir / 'deslop-review.sh'}")
-        print(f"  DESLOP_HARNESS={runner_harness} {scripts_dir / 'deslop-loop.sh'} --max-iterations 5 --priority P0,P1")
+        print(f"  {scripts_dir / 'deslop-review.sh'}")
+        print(f"  {scripts_dir / 'deslop-loop.sh'} --max-iterations 5 --priority P0,P1")
+        print(f"  Harness auto-detected as {runner_harness} from the install marker (override with DESLOP_HARNESS).")
     else:
         print(f"  Shared fallback installed at {target}; run with a concrete DESLOP_HARNESS adapter.")
     return 0

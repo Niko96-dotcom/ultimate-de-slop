@@ -22,6 +22,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from deslop_harness import resolve_harness
+
 
 SUPPORTED_HARNESSES = {
     "claude",
@@ -517,13 +520,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--schema", type=Path, required=True)
     parser.add_argument("--sandbox", required=True, choices=["read-only", "workspace-write", "danger-full-access"])
     parser.add_argument("--kind", default="agent")
-    parser.add_argument("--harness", default=os.environ.get("DESLOP_HARNESS", "codex"))
+    parser.add_argument("--harness")
     parser.add_argument("--permission-mode")
     parser.add_argument("--model")
     parser.add_argument("--add-dir", action="append", default=[])
     args = parser.parse_args()
     args.root = args.root.resolve()
-    args.harness = args.harness.lower()
+    args.harness = resolve_harness(
+        explicit=args.harness,
+        script_dir=Path(__file__).resolve().parent,
+    )
     config = load_config(args.root)
     args.timeout_seconds = seconds_setting(
         ["DESLOP_TIMEOUT_SECONDS", "DESLOP_CODEX_TIMEOUT_SECONDS"],

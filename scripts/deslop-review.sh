@@ -6,7 +6,7 @@ usage() {
 Usage: deslop-review.sh [--help]
 
 Run a read-only whole-codebase ultimate-de-slop review, extract JSON, and arbitrate findings.
-This invokes the harness selected by DESLOP_HARNESS, defaulting to codex, and does not edit product code.
+This invokes the harness selected by DESLOP_HARNESS or the install marker for this skill copy, defaulting to codex, and does not edit product code.
 EOF
 }
 
@@ -94,6 +94,8 @@ PY
 }
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+: "${DESLOP_HARNESS:=$(python3 "$SCRIPT_DIR/deslop_harness.py" --print)}"
+export DESLOP_HARNESS
 ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || {
   printf 'deslop-review: error: could not resolve git root; run from inside a git repository\n' >&2
   exit 1
@@ -154,7 +156,7 @@ set +e
 code=$?
 set -e
 if [ "$code" -ne 0 ]; then
-  printf 'deslop-review: error: %s review failed with exit code %s. Raw output: %s Runner: %s\n' "${DESLOP_HARNESS:-codex}" "$code" "$raw" "$runner_json" >&2
+  printf 'deslop-review: error: %s review failed with exit code %s. Raw output: %s Runner: %s\n' "$DESLOP_HARNESS" "$code" "$raw" "$runner_json" >&2
   exit "$code"
 fi
 

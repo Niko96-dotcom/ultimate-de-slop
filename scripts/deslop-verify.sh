@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: deslop-verify.sh [--checks-json PATH] FINDING_ID
 
-Run a read-only verifier through DESLOP_HARNESS, defaulting to codex, for one fixed_unverified finding.
+Run a read-only verifier through DESLOP_HARNESS or the install marker for this skill copy, defaulting to codex, for one fixed_unverified finding.
 EOF
 }
 
@@ -132,6 +132,8 @@ PY
 }
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+: "${DESLOP_HARNESS:=$(python3 "$SCRIPT_DIR/deslop_harness.py" --print)}"
+export DESLOP_HARNESS
 ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || {
   printf 'deslop-verify: error: could not resolve git root; run from inside a git repository\n' >&2
   exit 1
@@ -254,7 +256,7 @@ set +e
 code=$?
 set -e
 if [ "$code" -ne 0 ]; then
-  printf 'deslop-verify: error: %s verifier failed with exit code %s. Raw output: %s Runner: %s\n' "${DESLOP_HARNESS:-codex}" "$code" "$raw" "$runner_json" >&2
+  printf 'deslop-verify: error: %s verifier failed with exit code %s. Raw output: %s Runner: %s\n' "$DESLOP_HARNESS" "$code" "$raw" "$runner_json" >&2
   exit "$code"
 fi
 if ! extract_json "$last_message" "$verify_json" "$FINDING_ID" && ! extract_json "$raw" "$verify_json" "$FINDING_ID"; then
