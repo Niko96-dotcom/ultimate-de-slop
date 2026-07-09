@@ -86,7 +86,8 @@ The loop walks `inventory.json` risk partitions automatically when the accepted 
 
 Set `DESLOP_HARNESS=<harness>` to override the child-agent harness. When unset, the harness is read from `.ultimate-de-slop-install.json` in the installed skill directory (for example `cursor` after `install-cursor.sh`); otherwise the default is `codex`.
 Supported harness values are `codex`, `claude`, `opencode`, `cursor`, `pi`, `commandcode`, `hermes`, and `openclaw`.
-Set `DESLOP_MODEL=<model>` to select a model for any harness. `DESLOP_CODEX_MODEL=<model>` remains supported for Codex compatibility.
+By default, child agents use the OAuth/session model already selected in that harness (`cursor-agent login`, `codex login`, IDE model picker, etc.). Set `DESLOP_MODEL=<model>` only when you need to override that session default. `DESLOP_CODEX_MODEL=<model>` remains supported for Codex compatibility.
+Do not set API-key env vars when OAuth login is available; run the harness CLI `login` command instead.
 
 Child agent sessions must be invoked through `scripts/deslop-agent-runner.py` by the harness scripts. `scripts/deslop-codex-runner.py` remains as a Codex compatibility shim. The neutral runner captures raw output, `last-message.txt`, and `runner.json`, applies wall/idle timeouts, records missing/unsupported CLIs clearly, and keeps JSON extraction and state transitions in the deterministic shell/Python harness.
 

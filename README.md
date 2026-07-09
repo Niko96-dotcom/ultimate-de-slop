@@ -99,10 +99,10 @@ Installers live under `scripts/install/` and accept `--scope global`, `--scope l
 
 | Command | Installs for |
 | --- | --- |
-| `scripts/install/install-codex.sh` | Codex skill and Codex agent profiles |
-| `scripts/install/install-claude.sh` | Claude skill directory |
-| `scripts/install/install-opencode.sh` | OpenCode skill directory |
-| `scripts/install/install-cursor.sh` | Cursor skill directory |
+| `scripts/install/install-codex.sh` | Codex skill, agent profiles, and `/ultimate-de-slop` slash command |
+| `scripts/install/install-claude.sh` | Claude skill directory and `/ultimate-de-slop` slash command |
+| `scripts/install/install-opencode.sh` | OpenCode skill directory and `/ultimate-de-slop` command |
+| `scripts/install/install-cursor.sh` | Cursor skill directory and `/ultimate-de-slop` slash command |
 | `scripts/install/install-pi.sh` | Pi skill directory |
 | `scripts/install/install-commandcode.sh` | Command Code skill directory |
 | `scripts/install/install-hermes.sh` | Hermes software-development skill directory |

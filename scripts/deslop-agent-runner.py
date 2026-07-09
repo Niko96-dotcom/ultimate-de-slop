@@ -24,6 +24,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from deslop_harness import resolve_harness
+from deslop_oauth import resolve_model
 
 
 SUPPORTED_HARNESSES = {
@@ -131,22 +132,6 @@ def is_read_only(sandbox: str, kind: str) -> bool:
     if sandbox == "read-only":
         return True
     return kind in {"arbiter", "arbitrate", "review", "reviewer", "verify", "verifier"}
-
-
-def model_for(harness: str, explicit_model: str | None) -> str | None:
-    if explicit_model:
-        return explicit_model
-    env_names = [
-        "DESLOP_MODEL",
-        f"DESLOP_{harness.upper().replace('-', '_')}_MODEL",
-    ]
-    if harness == "codex":
-        env_names.append("DESLOP_CODEX_MODEL")
-    for env_name in env_names:
-        value = os.environ.get(env_name)
-        if value:
-            return value
-    return None
 
 
 def role_agent(kind: str) -> str:
@@ -336,7 +321,7 @@ def build_adapter(args: argparse.Namespace) -> AdapterCommand:
     if harness not in SUPPORTED_HARNESSES:
         supported = ", ".join(sorted(SUPPORTED_HARNESSES))
         raise SystemExit(f"unsupported DESLOP_HARNESS={args.harness!r}; expected one of: {supported}")
-    model = model_for(harness, args.model)
+    model = resolve_model(harness, args.model)
     return ADAPTERS[harness](args, model)
 
 
@@ -406,7 +391,7 @@ def base_diagnostic(args: argparse.Namespace, adapter: AdapterCommand) -> dict[s
         "kind": args.kind,
         "last_message": str(args.last_message),
         "missing_cli": False,
-        "model": model_for(adapter.harness, args.model),
+        "model": resolve_model(adapter.harness, args.model),
         "native_last_message": adapter.native_last_message,
         "permission_mode": adapter.permission_mode,
         "prompt": str(args.prompt),

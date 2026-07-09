@@ -9,7 +9,8 @@ Live soak runs prove Ultimate De-Slop outside the deterministic fake-CLI CI fixt
 
 ```sh
 export DESLOP_HARNESS=<codex|claude|cursor|opencode|...>
-export DESLOP_MODEL=<model-id>   # e.g. composer-2.5 for cursor
+# Optional override; omit to use the OAuth/session model for that harness
+export DESLOP_MODEL=<model-id>
 scripts/deslop-doctor.py
 ```
 
@@ -49,7 +50,7 @@ Store artifacts under a local path such as `artifacts/deslop-soak/<date>-<harnes
 | --- | --- | --- | --- | --- |
 | Codex | (pin with `DESLOP_MODEL`) | pending live soak | | Default adapter |
 | Claude | (pin with `DESLOP_MODEL`) | pending live soak | | |
-| Cursor | `composer-2.5` | pending live soak | | Requires `CURSOR_API_KEY` or `agent login` |
+| Cursor | session default (e.g. `composer-2.5`) | pending live soak | | Requires `cursor-agent login` (OAuth) or API key |
 | OpenCode | (pin with `DESLOP_MODEL`) | pending live soak | | |
 | Deterministic fake Codex | n/a | covered in CI | `tests.test_harness.HarnessTests.test_deterministic_proof_run` | Not a live model |
 

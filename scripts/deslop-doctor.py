@@ -14,6 +14,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from deslop_harness import resolve_harness
+from deslop_oauth import auth_status, resolve_model
 
 
 HARNESS_CLI = {
@@ -26,11 +27,6 @@ HARNESS_CLI = {
     "openclaw": "openclaw",
     "pi": "pi",
 }
-
-AUTH_ENV = {
-    "cursor": ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
-}
-
 
 def fail(message: str) -> None:
     print(f"deslop-doctor: error: {message}", file=sys.stderr)
@@ -54,20 +50,6 @@ def repo_root_optional() -> Path | None:
     return Path(result.stdout.strip()).resolve()
 
 
-def selected_model(harness: str) -> str | None:
-    names = [
-        "DESLOP_MODEL",
-        f"DESLOP_{harness.upper().replace('-', '_')}_MODEL",
-    ]
-    if harness == "codex":
-        names.append("DESLOP_CODEX_MODEL")
-    for name in names:
-        value = os.environ.get(name)
-        if value:
-            return value
-    return None
-
-
 def check_item(ok: bool, code: str, message: str, *, level: str | None = None) -> dict[str, Any]:
     resolved_level = level or ("ok" if ok else "error")
     return {"ok": ok, "code": code, "level": resolved_level, "message": message}
@@ -89,7 +71,7 @@ def build_report(harness: str | None = None) -> dict[str, Any]:
         )
         return {
             "harness": harness_name,
-            "model": selected_model(harness_name),
+            "model": resolve_model(harness_name),
             "ready": False,
             "checks": checks,
         }
@@ -113,32 +95,28 @@ def build_report(harness: str | None = None) -> dict[str, Any]:
             )
         )
 
-    auth_names = AUTH_ENV.get(harness_name, [])
-    if auth_names:
-        present = [name for name in auth_names if os.environ.get(name)]
-        if present:
-            checks.append(
-                check_item(
-                    True,
-                    "auth_env",
-                    f"Auth env present: {', '.join(present)}",
-                )
+    auth = auth_status(harness_name, cli)
+    if auth["mode"] != "none":
+        checks.append(
+            check_item(
+                bool(auth["ok"]),
+                "auth",
+                str(auth["message"]),
             )
-        else:
-            checks.append(
-                check_item(
-                    False,
-                    "auth_env",
-                    f"Missing auth for {harness_name}. Set one of {', '.join(auth_names)} or run `{cli} login`.",
-                )
-            )
+        )
 
-    model = selected_model(harness_name)
+    model = resolve_model(harness_name)
+    if model:
+        model_message = f"Model: {model}"
+        if not os.environ.get("DESLOP_MODEL"):
+            model_message += " (OAuth/session default; set DESLOP_MODEL to override)"
+    else:
+        model_message = "Model: harness CLI default (set DESLOP_MODEL to pin one)"
     checks.append(
         check_item(
             True,
             "model",
-            f"Model: {model}" if model else "Model: harness default (set DESLOP_MODEL to pin one)",
+            model_message,
             level="ok",
         )
     )
@@ -186,16 +164,16 @@ def build_report(harness: str | None = None) -> dict[str, Any]:
         "model": model,
         "ready": ready,
         "repo_root": str(root) if root else None,
-        "suggested_commands": suggested(ready, harness_name),
+        "suggested_commands": suggested(ready, harness_name, cli),
     }
 
 
-def suggested(ready: bool, harness: str) -> list[str]:
+def suggested(ready: bool, harness: str, cli: str) -> list[str]:
     if not ready:
         return [
             "Fix the error checks above, then re-run scripts/deslop-doctor.py",
             f"export DESLOP_HARNESS={harness}",
-            "export DESLOP_MODEL=<model-id>   # optional",
+            f"`{cli} login` for OAuth auth; DESLOP_MODEL only if you need to override the session default",
         ]
     return [
         "scripts/deslop-init.sh",

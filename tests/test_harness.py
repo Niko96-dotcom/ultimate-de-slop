@@ -1361,6 +1361,7 @@ print(json.dumps({"argv": sys.argv[1:]}))
             scripts_dir = skill_root / "scripts"
             scripts_dir.mkdir(parents=True)
             shutil.copy(SCRIPT_DIR / "deslop_harness.py", scripts_dir / "deslop_harness.py")
+            shutil.copy(SCRIPT_DIR / "deslop_oauth.py", scripts_dir / "deslop_oauth.py")
             shutil.copy(SCRIPT_DIR / "deslop-agent-runner.py", scripts_dir / "deslop-agent-runner.py")
             marker = {"harness": "cursor"}
             (skill_root / ".ultimate-de-slop-install.json").write_text(json.dumps(marker) + "\n")
@@ -2249,7 +2250,44 @@ print(text)
             report = json.loads(result.stdout)
             codes = {item["code"]: item for item in report["checks"]}
             self.assertTrue(codes["cli_on_path"]["ok"])
-            self.assertFalse(codes["auth_env"]["ok"])
+            self.assertFalse(codes["auth"]["ok"])
+
+    def test_doctor_accepts_cursor_oauth_login(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(
+                fake_bin / "cursor-agent",
+                "#!/usr/bin/env bash\nif [[ \"$1\" == status ]]; then echo 'Logged in as test@example.com'; fi\nexit 0\n",
+            )
+            clean = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in {"CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"}
+            }
+            clean.update(
+                {
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                    "DESLOP_HARNESS": "cursor",
+                    "HOME": str(root),
+                }
+            )
+            cursor_config = root / ".cursor"
+            cursor_config.mkdir()
+            (cursor_config / "cli-config.json").write_text(
+                json.dumps({"selectedModel": {"modelId": "composer-2.5"}}) + "\n"
+            )
+            result = run(
+                [sys.executable, str(SCRIPT_DIR / "deslop-doctor.py"), "--json", "--harness", "cursor"],
+                cwd=root,
+                env=clean,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            codes = {item["code"]: item for item in report["checks"]}
+            self.assertTrue(codes["auth"]["ok"])
+            self.assertEqual(report["model"], "composer-2.5")
 
     def test_doctor_ready_when_cli_present(self) -> None:
         tempdir, root = self.make_repo()
@@ -2471,6 +2509,68 @@ printf '%s\\n' "$payload"
             command = home / ".cursor" / "commands" / "ultimate-de-slop.md"
             self.assertTrue(command.exists())
             self.assertIn("deslop-continue.sh", command.read_text())
+            self.assertIn("Cursor slash command: /ultimate-de-slop", result.stdout)
+
+    def test_claude_installer_installs_command(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            home = root / "home"
+            result = run(
+                [str(SCRIPT_DIR / "install" / "install-claude.sh"), "--home", str(home)],
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            command = home / ".claude" / "commands" / "ultimate-de-slop.md"
+            self.assertTrue(command.exists())
+            self.assertIn("deslop-loop.sh", command.read_text())
+            self.assertIn("Claude Code slash command: /ultimate-de-slop", result.stdout)
+
+    def test_codex_installer_installs_command_plugin(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            home = root / "home"
+            fake_bin = home / "bin"
+            fake_bin.mkdir(parents=True)
+            write_executable(
+                fake_bin / "codex",
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = plugin ]; then
+  case "${2:-}" in
+    marketplace)
+      if [ "${3:-}" = add ]; then
+        echo "marketplace added"
+        exit 0
+      fi
+      ;;
+    add)
+      echo "plugin installed"
+      exit 0
+      ;;
+  esac
+fi
+exit 0
+""",
+            )
+            result = run(
+                [str(SCRIPT_DIR / "install" / "install-codex.sh"), "--home", str(home)],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            plugin_command = (
+                home
+                / ".codex"
+                / "marketplaces"
+                / "ultimate-de-slop"
+                / "plugins"
+                / "ultimate-de-slop"
+                / "commands"
+                / "ultimate-de-slop.md"
+            )
+            self.assertTrue(plugin_command.exists())
+            self.assertFalse((home / ".agents" / "commands" / "ultimate-de-slop.md").exists())
+            self.assertIn("Codex slash command: /ultimate-de-slop", result.stdout)
 
     def test_fix_marks_needs_human_when_change_budget_exceeded(self) -> None:
         tempdir, root = self.make_repo()

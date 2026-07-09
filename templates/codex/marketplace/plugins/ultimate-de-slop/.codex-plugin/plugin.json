@@ -1,0 +1,23 @@
+{
+  "name": "ultimate-de-slop",
+  "version": "1.0.0",
+  "description": "Bounded whole-repo code-quality review, fix, check, and verify loop.",
+  "author": {
+    "name": "Ultimate De-Slop"
+  },
+  "interface": {
+    "displayName": "Ultimate De-Slop",
+    "shortDescription": "Bounded code-quality repair loop",
+    "longDescription": "Run strict structural review, one-finding fixes, deterministic validation, and independent verification with explicit stop policy.",
+    "developerName": "Ultimate De-Slop",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run Ultimate De-Slop on this repository",
+      "Continue the Ultimate De-Slop loop from the last checkpoint"
+    ]
+  }
+}

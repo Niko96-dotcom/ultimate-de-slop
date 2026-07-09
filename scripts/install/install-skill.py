@@ -8,6 +8,7 @@ import filecmp
 import json
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -228,6 +229,95 @@ def cursor_config_root(scope: str, home: Path, project_dir: Path) -> Path:
     return project_dir / ".cursor"
 
 
+def copy_template_tree(source: Path, target: Path, dry_run: bool, label: str) -> list[str]:
+    actions = [f"{label}: {target}"]
+    if dry_run:
+        return actions
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target, symlinks=True)
+    return actions
+
+
+def claude_config_root(scope: str, home: Path, project_dir: Path) -> Path:
+    if scope == "global":
+        return home / ".claude"
+    return project_dir / ".claude"
+
+
+def install_claude_assets(source: Path, scope: str, home: Path, project_dir: Path, dry_run: bool) -> list[str]:
+    config_root = claude_config_root(scope, home, project_dir)
+    template_root = source / "templates" / "claude"
+    actions: list[str] = []
+    actions.extend(copy_template_files(template_root / "commands", config_root / "commands", dry_run, "claude command"))
+    return actions
+
+
+def codex_marketplace_root(home: Path) -> Path:
+    return home / ".codex" / "marketplaces" / SKILL_NAME
+
+
+def install_codex_command_plugin(source: Path, home: Path, dry_run: bool) -> list[str]:
+    template_root = source / "templates" / "codex"
+    marketplace_target = codex_marketplace_root(home)
+    actions: list[str] = []
+    actions.extend(
+        copy_template_tree(
+            template_root / "marketplace",
+            marketplace_target,
+            dry_run,
+            "codex plugin marketplace",
+        )
+    )
+    command_source = template_root / "commands" / "ultimate-de-slop.md"
+    command_target = marketplace_target / "plugins" / SKILL_NAME / "commands" / "ultimate-de-slop.md"
+    actions.append(f"codex plugin command: {command_target}")
+    if not dry_run:
+        command_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(command_source, command_target)
+    if dry_run:
+        actions.append(f"codex plugin marketplace add: {marketplace_target}")
+        actions.append("codex plugin add ultimate-de-slop@ultimate-de-slop")
+        return actions
+    codex = shutil.which("codex")
+    if codex is None:
+        actions.append("codex plugin: skipped (codex not on PATH; restart Codex after installing the CLI)")
+        return actions
+    marketplace_result = subprocess.run(
+        [codex, "plugin", "marketplace", "add", str(marketplace_target)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if marketplace_result.returncode == 0:
+        actions.append(f"codex plugin marketplace registered: {marketplace_target}")
+    elif "already" in marketplace_result.stdout.lower():
+        actions.append(f"codex plugin marketplace already registered: {marketplace_target}")
+    else:
+        actions.append(
+            "codex plugin marketplace registration failed: "
+            + marketplace_result.stdout.strip().replace("\n", " ")
+        )
+        return actions
+    plugin_result = subprocess.run(
+        [codex, "plugin", "add", "ultimate-de-slop@ultimate-de-slop"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if plugin_result.returncode == 0:
+        actions.append("codex plugin installed: ultimate-de-slop@ultimate-de-slop")
+    elif "already" in plugin_result.stdout.lower() or "installed" in plugin_result.stdout.lower():
+        actions.append("codex plugin already installed: ultimate-de-slop@ultimate-de-slop")
+    else:
+        actions.append(
+            "codex plugin install failed: " + plugin_result.stdout.strip().replace("\n", " ")
+        )
+    return actions
+
+
 def install_cursor_assets(source: Path, scope: str, home: Path, project_dir: Path, dry_run: bool) -> list[str]:
     config_root = cursor_config_root(scope, home, project_dir)
     template_root = source / "templates" / "cursor"
@@ -265,6 +355,18 @@ def install(args: argparse.Namespace) -> int:
         extra_actions = install_codex_profiles(source, args.scope, home, project_dir, args.dry_run)
         for action in extra_actions:
             print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
+        if args.scope == "global":
+            plugin_actions = install_codex_command_plugin(source, home, args.dry_run)
+            for action in plugin_actions:
+                print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
+            if plugin_actions and not args.dry_run:
+                print("Codex slash command: /ultimate-de-slop (restart Codex or open a new chat if it does not appear).")
+    if args.harness == "claude":
+        extra_actions = install_claude_assets(source, args.scope, home, project_dir, args.dry_run)
+        for action in extra_actions:
+            print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
+        if extra_actions:
+            print("Claude Code slash command: /ultimate-de-slop")
     if args.harness == "opencode":
         extra_actions = install_opencode_assets(source, args.scope, home, project_dir, args.dry_run)
         for action in extra_actions:
@@ -276,7 +378,7 @@ def install(args: argparse.Namespace) -> int:
         for action in extra_actions:
             print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
         if extra_actions:
-            print("Cursor loads command files from .cursor/commands; restart or reload Cursor rules if needed.")
+            print("Cursor slash command: /ultimate-de-slop (restart or reload Cursor rules if needed).")
 
     scripts_dir = target / "scripts"
     runner_harness = layout["runner_harness"]
