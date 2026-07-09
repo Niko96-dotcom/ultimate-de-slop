@@ -34,6 +34,9 @@ if [ ! -f "$ROOT/.deslop/config.json" ]; then
   "max_changed_lines_per_fix": 400,
   "agent_timeout_seconds": 5400,
   "agent_idle_timeout_seconds": 1200,
+  "agent_idle_timeout_buffering_seconds": 0,
+  "agent_idle_timeout_fix_seconds": 3600,
+  "agent_idle_timeout_override": false,
   "agent_terminate_grace_seconds": 10,
   "codex_timeout_seconds": 5400,
   "codex_idle_timeout_seconds": 1200,
@@ -53,16 +56,22 @@ if [ ! -f "$ROOT/.deslop/findings.jsonl" ]; then
   : > "$ROOT/.deslop/findings.jsonl"
 fi
 
-python3 - "$ROOT" <<'PY'
+python3 - "$ROOT" "$SCRIPT_DIR" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, sys.argv[2])
+from deslop_harness import ensure_config_defaults
+
 root = Path(sys.argv[1])
 deslop = root / ".deslop"
+config_path = deslop / "config.json"
+config = json.loads(config_path.read_text())
+if ensure_config_defaults(config):
+    config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
 state_path = deslop / "state.json"
-config = json.loads((deslop / "config.json").read_text())
 if not state_path.exists():
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     state = {

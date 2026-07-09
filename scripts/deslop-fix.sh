@@ -127,15 +127,20 @@ if [ ! -f "$ROOT/.deslop/config.json" ]; then
   "$SCRIPT_DIR/deslop-init.sh"
 fi
 
+python3 "$SCRIPT_DIR/deslop_finding_id.py" validate "$FINDING_ID" --prefix deslop-fix || exit 1
+
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-run_dir="$ROOT/.deslop/runs/${timestamp}-fix-${FINDING_ID}"
+run_dir="$(python3 "$SCRIPT_DIR/deslop_finding_id.py" run-dir "$ROOT" fix "$FINDING_ID" "$timestamp")" || exit 1
 mkdir -p "$run_dir"
 
-python3 - "$ROOT" "$FINDING_ID" "$run_dir/finding.json" <<'PY'
+python3 - "$ROOT" "$FINDING_ID" "$run_dir/finding.json" "$SCRIPT_DIR" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, sys.argv[4])
+from deslop_loop_support import write_findings_jsonl
 
 root = Path(sys.argv[1])
 finding_id = sys.argv[2]
@@ -157,8 +162,37 @@ now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00
 target["status"] = "fixing"
 target["updated_at"] = now
 snapshot.write_text(json.dumps(target, indent=2, sort_keys=True) + "\n")
-path.write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in items))
+write_findings_jsonl(root, items)
 PY
+
+revert_fixing_on_exit() {
+  python3 - "$ROOT" "$FINDING_ID" "$SCRIPT_DIR" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[3])
+from deslop_loop_support import write_findings_jsonl
+
+root = Path(sys.argv[1])
+finding_id = sys.argv[2]
+path = root / ".deslop" / "findings.jsonl"
+if not path.exists():
+    raise SystemExit(0)
+items = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+target = next((item for item in items if item.get("id") == finding_id), None)
+if target is None or target.get("status") != "fixing":
+    raise SystemExit(0)
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+target["status"] = "accepted"
+target["updated_at"] = now
+target["interrupted_fix"] = {"at": now, "reason": "fix script exited before completing fix contract"}
+write_findings_jsonl(root, items)
+print(f"Finding {finding_id}: reverted to accepted (fix interrupted)", file=sys.stderr)
+PY
+}
+trap revert_fixing_on_exit EXIT
 
 prompt="$run_dir/prompt.txt"
 raw="$run_dir/raw-fix-output.txt"
@@ -219,13 +253,16 @@ mark_fix_failure() {
   reason="$1"
   exit_code="${2:-1}"
   write_attempt_snapshots
-  python3 - "$ROOT" "$FINDING_ID" "$reason" "$exit_code" "$runner_json" "$raw" "$status_before" "$diff_before" <<'PY'
+  python3 - "$ROOT" "$FINDING_ID" "$reason" "$exit_code" "$runner_json" "$raw" "$status_before" "$diff_before" "$SCRIPT_DIR" <<'PY'
 import json
 import subprocess
 import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, sys.argv[9])
+from deslop_loop_support import write_findings_jsonl
 
 root = Path(sys.argv[1])
 finding_id = sys.argv[2]
@@ -295,7 +332,7 @@ else:
     target["status"] = "accepted"
     target["block_reason"] = reason
 
-findings_path.write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in items))
+write_findings_jsonl(root, items)
 
 state_path = root / ".deslop" / "state.json"
 state = load_json(state_path, {})
@@ -351,13 +388,16 @@ fi
 
 write_attempt_snapshots
 
-python3 - "$ROOT" "$FINDING_ID" "$fix_json" "$status_before" "$diff_before" "$status_after" "$diff_after" "$attempt_delta" "$run_dir" <<'PY'
+python3 - "$ROOT" "$FINDING_ID" "$fix_json" "$status_before" "$diff_before" "$status_after" "$diff_after" "$attempt_delta" "$run_dir" "$SCRIPT_DIR" <<'PY'
 import json
 import subprocess
 import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, sys.argv[10])
+from deslop_loop_support import write_findings_jsonl
 
 root = Path(sys.argv[1])
 finding_id = sys.argv[2]
@@ -452,7 +492,7 @@ fix["snapshot_paths"] = {
 }
 target["last_fix"] = fix
 target["updated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-path.write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in items))
+write_findings_jsonl(root, items)
 
 state_path = root / ".deslop" / "state.json"
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

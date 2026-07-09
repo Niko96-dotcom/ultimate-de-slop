@@ -72,6 +72,23 @@ Use review-only mode when you want findings without edits:
 | Auto revert | opt-in with `--auto-revert` |
 | Dirty tree | blocked unless `--allow-dirty` |
 | Runtime stop | `touch .deslop/stop` |
+| Agent wall timeout | 5400s (90 min) per child call |
+| Agent idle timeout | 1200s for Codex; **disabled** for buffering harnesses (Cursor, Claude, …) |
+
+Long fix/review runs can hit the **idle** cap when a harness CLI goes silent on stdout (common with `cursor-agent` during long tool sessions). **Buffering harnesses** (Cursor, Claude, OpenCode, Pi, Command Code, Hermes) now default to **idle disabled** — only the 90-minute wall cap applies. Codex keeps the 20-minute idle cap because it streams output more reliably.
+
+```sh
+# persist a custom idle cap (applies to all harnesses)
+scripts/deslop-loop.sh --agent-idle-timeout-seconds 3600 --allow-dirty
+
+# force idle cap off everywhere
+export DESLOP_IDLE_TIMEOUT_SECONDS=0
+
+# fix-only idle cap for streaming harnesses like codex (default 3600s)
+export DESLOP_FIX_IDLE_TIMEOUT_SECONDS=7200
+```
+
+Wall-clock cap: `--agent-timeout-seconds` / `DESLOP_TIMEOUT_SECONDS` (default 5400). `scripts/deslop-doctor.py` prints effective values for your harness.
 
 ## Adapter Matrix
 

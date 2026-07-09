@@ -139,6 +139,8 @@ ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || {
   exit 1
 }
 
+python3 "$SCRIPT_DIR/deslop_finding_id.py" validate "$FINDING_ID" --prefix deslop-verify || exit 1
+
 if [ -z "$CHECKS_JSON" ]; then
   CHECKS_JSON="$(python3 - "$ROOT" "$FINDING_ID" <<'PY'
 import sys
@@ -156,7 +158,7 @@ if [ -z "$CHECKS_JSON" ] || [ ! -f "$CHECKS_JSON" ]; then
 fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-run_dir="$ROOT/.deslop/runs/${timestamp}-verify-${FINDING_ID}"
+run_dir="$(python3 "$SCRIPT_DIR/deslop_finding_id.py" run-dir "$ROOT" verify "$FINDING_ID" "$timestamp")" || exit 1
 mkdir -p "$run_dir"
 finding_json="$run_dir/finding.json"
 python3 - "$ROOT" "$FINDING_ID" "$finding_json" <<'PY'

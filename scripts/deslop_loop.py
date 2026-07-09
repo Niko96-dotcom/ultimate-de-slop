@@ -332,6 +332,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--continue", dest="continue_loop", action="store_true", help="resume while work remains")
     parser.add_argument("--no-persist-config", action="store_true")
+    parser.add_argument(
+        "--agent-timeout-seconds",
+        type=float,
+        help="wall-clock cap per agent call (default 5400; env DESLOP_TIMEOUT_SECONDS overrides)",
+    )
+    parser.add_argument(
+        "--agent-idle-timeout-seconds",
+        type=float,
+        help="kill agent after this many seconds without stdout (default 1200; 0 disables; env DESLOP_IDLE_TIMEOUT_SECONDS overrides)",
+    )
     return parser.parse_args(argv)
 
 
@@ -344,6 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         priority=args.priority,
         review_every=args.review_every,
         empty_review_waves_required=args.empty_review_waves,
+        agent_timeout_seconds=args.agent_timeout_seconds,
+        agent_idle_timeout_seconds=args.agent_idle_timeout_seconds,
         persist=not args.no_persist_config,
     )
 

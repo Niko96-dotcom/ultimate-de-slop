@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deslop_harness import resolve_harness
+from deslop_harness import resolve_harness, resolve_agent_timeouts
 from deslop_oauth import auth_status, resolve_model
 
 
@@ -150,6 +150,27 @@ def build_report(harness: str | None = None) -> dict[str, Any]:
                     True,
                     "deslop_init",
                     f".deslop initialized under {deslop}",
+                )
+            )
+            timeouts = resolve_agent_timeouts(
+                root,
+                harness=harness_name,
+                kind="fix",
+                script_dir=Path(__file__).resolve().parent,
+            )
+            idle = int(timeouts["idle_timeout_seconds"])
+            idle_note = "disabled (wall only)" if idle == 0 else f"{idle}s no-stdout idle cap"
+            checks.append(
+                check_item(
+                    True,
+                    "agent_timeouts",
+                    (
+                        f"Fix runs on {harness_name}: wall={int(timeouts['timeout_seconds'])}s, "
+                        f"idle={idle_note} [{timeouts.get('idle_timeout_source')}]. "
+                        "Buffering harnesses (cursor, claude, opencode, …) disable idle by default. "
+                        "Override with DESLOP_IDLE_TIMEOUT_SECONDS or --agent-idle-timeout-seconds."
+                    ),
+                    level="ok",
                 )
             )
 

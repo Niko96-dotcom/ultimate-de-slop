@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from deslop_harness import CONFIG_DEFAULTS, ensure_config_defaults
+
 
 DEFAULT_LOOP_PRIORITY = "P0,P1"
 DEFAULT_MAX_ITERATIONS = 5
@@ -43,10 +45,14 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def load_config(root: Path) -> dict[str, Any]:
     config = load_json(root / ".deslop" / "config.json", {})
-    return config if isinstance(config, dict) else {}
+    if not isinstance(config, dict):
+        config = {}
+    ensure_config_defaults(config)
+    return config
 
 
 def save_config(root: Path, config: dict[str, Any]) -> None:
+    ensure_config_defaults(config)
     write_json(root / ".deslop" / "config.json", config)
 
 
@@ -71,6 +77,14 @@ def read_findings(root: Path) -> list[dict[str, Any]]:
         if isinstance(item, dict):
             findings.append(item)
     return findings
+
+
+def write_findings_jsonl(root: Path, items: list[dict[str, Any]]) -> None:
+    path = root / ".deslop" / "findings.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("".join(json.dumps(item, sort_keys=True) + "\n" for item in items))
+    tmp.replace(path)
 
 
 def git_porcelain(root: Path) -> str:
@@ -105,6 +119,8 @@ class LoopSettings:
     priority: str
     review_every: int
     empty_review_waves_required: int
+    agent_timeout_seconds: float | None = None
+    agent_idle_timeout_seconds: float | None = None
 
     @property
     def priorities(self) -> list[str]:
@@ -118,6 +134,8 @@ def resolve_settings(
     priority: str | None,
     review_every: int | None,
     empty_review_waves_required: int | None,
+    agent_timeout_seconds: float | None = None,
+    agent_idle_timeout_seconds: float | None = None,
     persist: bool,
 ) -> LoopSettings:
     config = load_config(root)
@@ -130,12 +148,28 @@ def resolve_settings(
             if empty_review_waves_required is not None
             else config.get("empty_review_waves_required", DEFAULT_EMPTY_REVIEW_WAVES_REQUIRED)
         ),
+        agent_timeout_seconds=(
+            float(agent_timeout_seconds)
+            if agent_timeout_seconds is not None
+            else float(config.get("agent_timeout_seconds", CONFIG_DEFAULTS["agent_timeout_seconds"]))
+        ),
+        agent_idle_timeout_seconds=(
+            float(agent_idle_timeout_seconds)
+            if agent_idle_timeout_seconds is not None
+            else float(config.get("agent_idle_timeout_seconds", CONFIG_DEFAULTS["agent_idle_timeout_seconds"]))
+        ),
     )
     if persist:
         config["max_iterations"] = settings.max_iterations
         config["loop_priority"] = settings.priority
         config["review_every"] = settings.review_every
         config["empty_review_waves_required"] = settings.empty_review_waves_required
+        config["agent_timeout_seconds"] = settings.agent_timeout_seconds
+        config["agent_idle_timeout_seconds"] = settings.agent_idle_timeout_seconds
+        config["codex_timeout_seconds"] = settings.agent_timeout_seconds
+        config["codex_idle_timeout_seconds"] = settings.agent_idle_timeout_seconds
+        if agent_idle_timeout_seconds is not None:
+            config["agent_idle_timeout_override"] = True
         save_config(root, config)
     return settings
 

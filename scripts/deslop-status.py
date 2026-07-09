@@ -11,6 +11,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from deslop_harness import format_agent_timeouts, resolve_harness
+
 
 NON_OPEN = {"verified", "rejected", "false_positive"}
 
@@ -341,6 +344,7 @@ def main() -> int:
     else:
         print("Ultimate De-Slop Status")
         print(f"Score: {status['score']}")
+        print(format_agent_timeouts(root, harness=resolve_harness(script_dir=Path(__file__).resolve().parent)))
         print(f"Findings by status: {status['counts_by_status']}")
         print(f"Findings by severity: {status['counts_by_severity']}")
         print(f"Next: {status['next'] or 'NONE'}")

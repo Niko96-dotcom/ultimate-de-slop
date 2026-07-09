@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from deslop_harness import load_deslop_config, resolve_agent_timeouts
 from deslop_harness import resolve_harness
 from deslop_oauth import resolve_model
 
@@ -66,39 +67,7 @@ def now() -> str:
 
 
 def load_config(root: Path) -> dict[str, Any]:
-    path = root / ".deslop" / "config.json"
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def seconds_setting(
-    env_names: list[str],
-    config: dict[str, Any],
-    config_names: list[str],
-    default: float,
-) -> float:
-    raw: Any = None
-    for env_name in env_names:
-        raw = os.environ.get(env_name)
-        if raw is not None:
-            break
-    if raw is None:
-        for config_name in config_names:
-            raw = config.get(config_name)
-            if raw is not None:
-                break
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return default
-    return max(value, 0.0)
+    return load_deslop_config(root)
 
 
 def terminate_process_group(process: subprocess.Popen[bytes], grace_seconds: float) -> None:
@@ -404,6 +373,7 @@ def base_diagnostic(args: argparse.Namespace, adapter: AdapterCommand) -> dict[s
         "timed_out": False,
         "timeout_seconds": args.timeout_seconds,
         "idle_timeout_seconds": args.idle_timeout_seconds,
+        "idle_timeout_source": getattr(args, "idle_timeout_source", "config"),
         "wall_timed_out": False,
     }
 
@@ -467,8 +437,14 @@ def run_process(args: argparse.Namespace, adapter: AdapterCommand, diagnostic: d
                     status = "idle_timeout"
                     diagnostic["timed_out"] = True
                     diagnostic["idle_timed_out"] = True
+                    idle_source = getattr(args, "idle_timeout_source", "config")
                     raw_handle.write(
-                        f"\n[deslop-agent-runner] idle timeout after {idle:.1f}s without output\n".encode()
+                        (
+                            f"\n[deslop-agent-runner] idle timeout after {idle:.1f}s without stdout "
+                            f"(policy={idle_source}; child still running). "
+                            "For buffering harnesses, idle is disabled by default; "
+                            "raise DESLOP_IDLE_TIMEOUT_SECONDS or agent_idle_timeout_seconds to override.\n"
+                        ).encode()
                     )
                     raw_handle.flush()
                     terminate_process_group(process, args.grace_seconds)
@@ -515,25 +491,16 @@ def parse_args() -> argparse.Namespace:
         explicit=args.harness,
         script_dir=Path(__file__).resolve().parent,
     )
-    config = load_config(args.root)
-    args.timeout_seconds = seconds_setting(
-        ["DESLOP_TIMEOUT_SECONDS", "DESLOP_CODEX_TIMEOUT_SECONDS"],
-        config,
-        ["agent_timeout_seconds", "timeout_seconds", "codex_timeout_seconds"],
-        5400.0,
+    timeouts = resolve_agent_timeouts(
+        args.root,
+        harness=args.harness,
+        kind=args.kind,
+        script_dir=Path(__file__).resolve().parent,
     )
-    args.idle_timeout_seconds = seconds_setting(
-        ["DESLOP_IDLE_TIMEOUT_SECONDS", "DESLOP_CODEX_IDLE_TIMEOUT_SECONDS"],
-        config,
-        ["agent_idle_timeout_seconds", "idle_timeout_seconds", "codex_idle_timeout_seconds"],
-        1200.0,
-    )
-    args.grace_seconds = seconds_setting(
-        ["DESLOP_TERMINATE_GRACE_SECONDS", "DESLOP_CODEX_TERMINATE_GRACE_SECONDS"],
-        config,
-        ["agent_terminate_grace_seconds", "terminate_grace_seconds", "codex_terminate_grace_seconds"],
-        10.0,
-    )
+    args.timeout_seconds = float(timeouts["timeout_seconds"])
+    args.idle_timeout_seconds = float(timeouts["idle_timeout_seconds"])
+    args.grace_seconds = float(timeouts["grace_seconds"])
+    args.idle_timeout_source = str(timeouts.get("idle_timeout_source", "config"))
     return args
 
 

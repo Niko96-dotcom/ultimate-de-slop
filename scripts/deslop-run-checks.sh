@@ -47,8 +47,10 @@ ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || {
   exit 1
 }
 
+python3 "$SCRIPT_DIR/deslop_finding_id.py" validate "$FINDING_ID" --prefix deslop-run-checks || exit 1
+
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-run_dir="$ROOT/.deslop/runs/${timestamp}-checks-${FINDING_ID}"
+run_dir="$(python3 "$SCRIPT_DIR/deslop_finding_id.py" run-dir "$ROOT" checks "$FINDING_ID" "$timestamp")" || exit 1
 mkdir -p "$run_dir"
 commands_json="$run_dir/commands.json"
 allowed_commands_json="$run_dir/allowed_commands.json"
@@ -56,12 +58,15 @@ results_jsonl="$run_dir/results.jsonl"
 checks_jsonl="$run_dir/checks.jsonl"
 checks_json="$run_dir/checks.json"
 
-python3 - "$ROOT" "$FINDING_ID" "$commands_json" <<'PY'
+python3 - "$ROOT" "$FINDING_ID" "$commands_json" "$SCRIPT_DIR" <<'PY'
 import json
 import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, sys.argv[4])
+from deslop_check_safety import inventory_command, is_safe_check_command
 
 root = Path(sys.argv[1])
 finding_id = sys.argv[2]
@@ -80,7 +85,11 @@ inventory_path = root / ".deslop" / "inventory.json"
 inventory_commands = []
 if inventory_path.exists():
     inventory = json.loads(inventory_path.read_text())
-    inventory_commands = [str(item.get("command")) for item in inventory.get("detected_commands", []) if item.get("command")]
+    inventory_commands = []
+    for item in inventory.get("detected_commands", []):
+        command = inventory_command(item)
+        if command and is_safe_check_command(command):
+            inventory_commands.append(command)
 if not commands:
     commands = inventory_commands
 
@@ -123,11 +132,13 @@ if commands and py_compile_fallback:
 target.write_text(json.dumps(commands, indent=2, sort_keys=True) + "\n")
 PY
 
-python3 - "$ROOT" "$allowed_commands_json" "$commands_json" "$SCRIPT_DIR/deslop-run-checks.sh" <<'PY'
+python3 - "$ROOT" "$allowed_commands_json" "$commands_json" "$SCRIPT_DIR/deslop-run-checks.sh" "$SCRIPT_DIR" <<'PY'
 import json
-import shlex
 import sys
 from pathlib import Path
+
+sys.path.insert(0, sys.argv[5])
+from deslop_check_safety import inventory_command, is_safe_check_command
 
 root = Path(sys.argv[1])
 target = Path(sys.argv[2])
@@ -136,99 +147,12 @@ run_checks_path = Path(sys.argv[4])
 inventory_path = root / ".deslop" / "inventory.json"
 allowlist = []
 
-SAFE_PREFIXES = (
-    ("python", "-m", "pytest"),
-    ("python3", "-m", "pytest"),
-    ("python", "-m", "unittest"),
-    ("python3", "-m", "unittest"),
-    ("python", "-m", "py_compile"),
-    ("python3", "-m", "py_compile"),
-    ("pytest",),
-    ("ruff", "check"),
-    ("mypy",),
-    ("lint-imports",),
-    ("import-linter",),
-    ("uv", "run", "pytest"),
-    ("uv", "run", "ruff"),
-    ("uv", "run", "mypy"),
-    ("uv", "run", "lint-imports"),
-    ("uv", "run", "import-linter"),
-    ("poetry", "run", "pytest"),
-    ("poetry", "run", "ruff"),
-    ("poetry", "run", "mypy"),
-    ("pipenv", "run", "pytest"),
-    ("npm", "--prefix"),
-    ("npm", "test"),
-    ("npm", "run"),
-    ("pnpm", "test"),
-    ("pnpm", "run"),
-    ("yarn", "test"),
-    ("yarn", "run"),
-    ("bun", "test"),
-    ("cargo", "test"),
-    ("go", "test"),
-    ("swift", "test"),
-    ("git", "diff", "--check"),
-    ("git", "status"),
-    ("test", "-d"),
-    ("test", "-f"),
-)
-SAFE_ENV = {"CI", "NODE_ENV", "PYTHONPATH", "UV_CACHE_DIR"}
-
-def has_unsafe_shell_syntax(command_text: str) -> bool:
-    if "\n" in command_text or "\r" in command_text:
-        return True
-    for pattern in ("$(", "${", "`"):
-        if pattern in command_text:
-            return True
-    try:
-        tokens = shlex.split(command_text)
-    except ValueError:
-        return True
-    for token in tokens:
-        if token in {";", "|", "||", "&", "&&", ">", ">>", "<", "<<", "|&"}:
-            return True
-    return False
-
-def strip_env(tokens: list[str]) -> list[str]:
-    rest = list(tokens)
-    while rest:
-        head = rest[0]
-        if "=" not in head or head.startswith("-"):
-            break
-        name, _value = head.split("=", 1)
-        if not name.replace("_", "").isalnum() or name not in SAFE_ENV:
-            break
-        rest.pop(0)
-    return rest
-
-def is_safe_check_command(command_text: str) -> bool:
-    value = command_text.strip()
-    if not value or has_unsafe_shell_syntax(value):
-        return False
-    tokens = strip_env(shlex.split(value))
-    if not tokens:
-        return False
-    if tokens[:2] in (["npm", "test"], ["pnpm", "test"], ["yarn", "test"]):
-        return len(tokens) == 2
-    if tokens[:2] in (["npm", "run"], ["pnpm", "run"], ["yarn", "run"]):
-        return len(tokens) == 3 and bool(tokens[2].strip())
-    if tokens[:2] in (["npm", "--prefix"], ["pnpm", "--dir"]):
-        return len(tokens) == 5 and tokens[3] == "run" and bool(tokens[2].strip()) and bool(tokens[4].strip())
-    for prefix in SAFE_PREFIXES:
-        if tuple(tokens[: len(prefix)]) == prefix:
-            return True
-    return False
-
 if inventory_path.exists():
   inventory = json.loads(inventory_path.read_text())
   for item in inventory.get("detected_commands", []):
-    if isinstance(item, str) and item.strip():
-      allowlist.append(item.strip())
-    elif isinstance(item, dict):
-      command = item.get("command")
-      if isinstance(command, str) and command.strip():
-        allowlist.append(command.strip())
+    command = inventory_command(item)
+    if command and is_safe_check_command(command):
+      allowlist.append(command)
 
 # Baseline allowlist entries for existing de-slop checks.
 allowlist.extend([
