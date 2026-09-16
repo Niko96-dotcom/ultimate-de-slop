@@ -111,3 +111,11 @@ without making it always-on. Do not enable de-slopping for unrelated tasks.
 Sources checked 2026-09-16: [skills and sync](https://prod.cursor.com/docs/skills),
 [native subagents and shared checkouts](https://prod.cursor.com/docs/subagents),
 [Projects](https://cursor.com/changelog/projects).
+
+### Cloud Context loader
+
+`templates/cursor/cloud/SKILL.md` is a single-file cloud entry for hosts whose
+User Context copy does not follow local updates or cannot mount supporting files.
+Install that entry as the cloud User Context skill. It fetches the current published
+package into the execution VM and pins that checkout for the life of the run.
+Keep the full package installed for local CLIs; the loader is only a cloud entry.
