@@ -53,3 +53,9 @@ category + normalized title + sorted files + normalized evidence claims
 ```
 
 The arbiter may merge duplicates into an existing active finding. Verified, blocked, false-positive, and human-needed findings should not be silently reopened.
+
+## Evidence lifetime
+
+The model-output schemas describe the payload before the harness enriches it. Generated fix/check/verify artifacts additionally record attempt identity and worktree content for stale-proof rejection. `changed_files` in persisted fix evidence comes from actual content changes; the model's list is retained separately for comparison.
+
+Terminal findings are deduplicated while their relevant source remains unchanged. A new report after that source changes is independently arbitrated as a new finding, preserving the prior resolution as history. Stronger evidence can also overcome a confidence-threshold rejection; a rejected finding is not a permanent suppression rule.

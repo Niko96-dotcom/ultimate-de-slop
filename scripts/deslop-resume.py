@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-ALLOWED_SOURCES = {"needs_human", "blocked"}
+ALLOWED_SOURCES = {"needs_human", "blocked", "fixing", "fixed_unverified"}
 ALLOWED_TARGETS = {"accepted", "rejected", "false_positive", "verified"}
 NON_OPEN = {"verified", "rejected", "false_positive"}
 
@@ -115,6 +115,8 @@ def main() -> int:
             f"allowed sources: {', '.join(sorted(ALLOWED_SOURCES))}"
         )
 
+    if args.target_status == "verified":
+        fail("use deslop-finalize.py with bound checks and PASS evidence to mark verified")
     timestamp = now()
     previous = current
     finding["status"] = args.target_status
@@ -129,6 +131,8 @@ def main() -> int:
         finding["verified_at"] = timestamp
     if args.target_status == "accepted":
         finding.pop("block_reason", None)
+        if previous in {"fixing", "fixed_unverified"}:
+            finding.pop("interrupted_fix", None)
 
     write_findings(findings_path, findings)
 
@@ -150,7 +154,9 @@ def main() -> int:
         "to_status": args.target_status,
     }
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    temporary_state = state_path.with_suffix(".json.tmp")
+    temporary_state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    temporary_state.replace(state_path)
 
     print(f"Finding {args.finding_id}: {previous} -> {args.target_status}")
     if args.reason:

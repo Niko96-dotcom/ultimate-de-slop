@@ -20,7 +20,65 @@
       "properties": {
         "consecutive_empty_review_waves": {"type": "integer"},
         "partition_index": {"type": "integer"},
-        "partitions": {"type": "array", "items": {"type": "string"}}
+        "partitions": {"type": "array", "items": {"type": "string"}},
+        "coverage_priority": {"type": "string"},
+        "coverage_fingerprint": {"type": "string"},
+        "coverage_content_fingerprint": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "loop_goal": {
+      "type": "object",
+      "description": "Persistent until-clean goal with finite budgets (no host API).",
+      "properties": {
+        "scope": {"type": "string", "enum": ["until-clean"]},
+        "priority": {"type": "string"},
+        "partitions": {"type": "array", "items": {"type": "string"}},
+        "limits": {
+          "type": "object",
+          "properties": {
+            "max_fix_attempts": {"type": "integer"},
+            "max_review_calls": {"type": "integer"},
+            "max_seconds": {"type": "number"}
+          },
+          "additionalProperties": true
+        },
+        "consumed": {
+          "type": "object",
+          "properties": {
+            "fix_attempts": {"type": "integer"},
+            "review_calls": {"type": "integer"},
+            "elapsed_seconds": {"type": "number"}
+          },
+          "additionalProperties": true
+        },
+        "in_flight": {
+          "type": ["object", "null"],
+          "description": "Crash-safe reservation marker persisted before child launch.",
+          "properties": {
+            "kind": {"type": "string"},
+            "started_at": {"type": "number"},
+            "elapsed_at_start": {"type": "number"}
+          },
+          "additionalProperties": true
+        },
+        "completed_fingerprint": {"type": ["string", "null"]},
+        "status": {"type": "string", "enum": ["active", "complete", "exhausted", "failed", "stopped"]},
+        "reason": {"type": ["string", "null"]},
+        "created_at": {"type": "string"},
+        "updated_at": {"type": "string"},
+        "empty_sweeps_required": {"type": "integer"}
+      },
+      "additionalProperties": true
+    },
+    "loop_dirty_baseline": {
+      "type": "object",
+      "description": "Exact content fingerprint after own successful cycle (excludes .deslop).",
+      "properties": {
+        "fingerprint": {"type": "string"},
+        "at": {"type": "string"},
+        "finding_id": {"type": ["string", "null"]},
+        "goal_created_at": {"type": ["string", "null"]}
       },
       "additionalProperties": true
     },
@@ -31,14 +89,19 @@
         "at": {"type": "string"},
         "stop_reason": {
           "type": "string",
-          "enum": ["stop_file", "no_eligible_findings", "max_iterations_reached", "finalize_halt"]
+          "enum": ["stop_file", "no_eligible_findings", "max_iterations_reached", "finalize_halt", "until_clean", "max_review_calls_reached", "max_seconds_reached", "stage_failed", "needs_recovery"]
         },
         "iterations_completed": {"type": "integer"},
         "max_iterations": {"type": "integer"},
         "priority": {"type": "string"},
         "verified_ids": {"type": "array", "items": {"type": "string"}},
         "halt_finding_id": {"type": ["string", "null"]},
-        "halt_status": {"type": ["string", "null"]}
+        "halt_status": {"type": ["string", "null"]},
+        "max_review_calls": {"type": ["integer", "null"]},
+        "review_calls_completed": {"type": ["integer", "null"]},
+        "max_seconds": {"type": ["number", "null"]},
+        "elapsed_seconds": {"type": ["number", "null"]},
+        "goal_scope": {"type": ["string", "null"]}
       },
       "additionalProperties": true
     }

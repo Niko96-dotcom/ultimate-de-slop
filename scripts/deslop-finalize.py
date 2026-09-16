@@ -97,13 +97,7 @@ def find_latest(root: Path, suffix: str, finding_id: str) -> Path | None:
     return matches[0] if matches else None
 
 
-def checks_failed(checks: dict[str, Any] | None) -> bool:
-    if not checks:
-        return False
-    for result in checks.get("results", []) or []:
-        if int(result.get("exit_code", 0) or 0) != 0 or result.get("status") == "failed":
-            return True
-    return False
+from deslop_verification_policy import checks_failed, is_docs_only_exception, is_docs_only_path, proof_matches
 
 
 def summarize(findings: list[dict[str, Any]]) -> dict[str, Any]:
@@ -150,12 +144,32 @@ def update_state(root: Path, config: dict[str, Any], findings: list[dict[str, An
         "path": ".deslop/stop",
     }
     state["last_run"] = last_run
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    temporary_state = path.with_suffix(".json.tmp")
+    temporary_state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    temporary_state.replace(path)
 
 
-def tracked_restore(root: Path) -> None:
-    run_git(root, ["restore", "--staged", "."], check=False)
-    run_git(root, ["restore", "--worktree", "."], check=False)
+def mutation_paths(root: Path, finding: dict[str, Any]) -> list[str]:
+    from deslop_verification_policy import finding_changed_files
+    paths = finding_changed_files(finding)
+    before = (finding.get("last_fix") or {}).get("snapshot_paths", {}).get("status_before")
+    if not before or not Path(before).is_file():
+        fail("commit/revert requires the original clean-worktree snapshot")
+    baseline = Path(before).read_text().splitlines()
+    if any(line and not line[3:].strip('"').startswith(".deslop/") for line in baseline):
+        fail("commit/revert refused: this attempt started with pre-existing changes")
+    if not paths or any(Path(p).is_absolute() or ".." in Path(p).parts or p.startswith(".deslop/") for p in paths):
+        fail("commit/revert requires bounded actual changed paths")
+    return paths
+
+
+def tracked_restore(root: Path, finding: dict[str, Any]) -> None:
+    paths = mutation_paths(root, finding)
+    tracked = [p for p in paths if run_git(root, ["ls-files", "--error-unmatch", "--", p], check=False).returncode == 0]
+    if tracked:
+        run_git(root, ["restore", "--source=HEAD", "--staged", "--worktree", "--", *tracked])
+    if len(tracked) != len(paths):
+        fail("tracked changes restored; newly created files retained for explicit recovery")
 
 
 def commit_fix(root: Path, finding: dict[str, Any], verify: dict[str, Any] | None, checks: dict[str, Any] | None) -> None:
@@ -163,7 +177,8 @@ def commit_fix(root: Path, finding: dict[str, Any], verify: dict[str, Any] | Non
     if not status:
         print("No git changes to commit.")
         return
-    run_git(root, ["add", "-A"], check=True)
+    paths = mutation_paths(root, finding)
+    run_git(root, ["add", "--", *paths], check=True)
     title = str(finding.get("title", "")).strip()
     short_title = title[:80] if title else "verified finding"
     body = [
@@ -201,14 +216,33 @@ def main() -> int:
     checks_path = args.checks_json or find_latest(root, "checks", args.finding_id)
     verify = load_json(verify_path, None) if verify_path else None
     checks = load_json(checks_path, None) if checks_path else None
-    bad_checks = checks_failed(checks)
+    if not isinstance(verify, dict) or verify.get("finding_id") != args.finding_id:
+        fail("verification finding_id mismatch or missing verification")
+    if not isinstance(verify.get("evidence"), list) or not any(str(v).strip() for v in verify["evidence"]):
+        fail("verification evidence is missing")
+    if not proof_matches(verify, finding, root) or not proof_matches(checks, finding, root):
+        fail("stale or mismatched attempt evidence; rerun checks and verification")
+    bad_checks = checks_failed(checks, finding_id=args.finding_id, finding=finding, verify=verify)
     verdict = str((verify or {}).get("verdict", "")).upper() if verify else ""
     timestamp = now()
     attempts = int(finding.get("attempts", 0) or 0)
     max_attempts = int(config.get("max_fix_attempts", 3) or 3)
     exit_code = 0
 
-    if bad_checks or verdict == "FAIL":
+    if verdict == "NEEDS_HUMAN":
+        finding["status"] = "needs_human"
+        finding["updated_at"] = timestamp
+        finding["verification"] = verify
+        exit_code = 1
+    elif verdict == "FALSE_POSITIVE":
+        changed = bool((finding.get("last_fix") or {}).get("changed_during_attempt"))
+        finding["status"] = "needs_human" if changed else "false_positive"
+        finding["updated_at"] = timestamp
+        finding["verification"] = verify
+        if changed:
+            finding["block_reason"] = "false-positive verdict left an unverified patch; inspect before recovery"
+            exit_code = 1
+    elif bad_checks or verdict == "FAIL":
         attempts += 1
         finding["attempts"] = attempts
         finding["updated_at"] = timestamp
@@ -221,24 +255,17 @@ def main() -> int:
         }
         finding["status"] = "blocked" if attempts >= max_attempts else "accepted"
         if args.auto_revert:
-            tracked_restore(root)
+            tracked_restore(root, finding)
         exit_code = 1
     elif verdict == "PASS":
+        if finding.get("status") != "fixed_unverified":
+            fail("PASS requires a fixed_unverified finding")
         finding["status"] = "verified"
         finding["updated_at"] = timestamp
         finding["verified_at"] = timestamp
         finding["verification"] = verify
         if args.commit:
             commit_fix(root, finding, verify, checks)
-    elif verdict == "NEEDS_HUMAN":
-        finding["status"] = "needs_human"
-        finding["updated_at"] = timestamp
-        finding["verification"] = verify
-        exit_code = 1
-    elif verdict == "FALSE_POSITIVE":
-        finding["status"] = "false_positive"
-        finding["updated_at"] = timestamp
-        finding["verification"] = verify
     else:
         fail("verification verdict missing; pass --verify-json or run deslop-verify.sh first")
 

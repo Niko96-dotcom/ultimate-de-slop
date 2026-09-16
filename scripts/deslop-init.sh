@@ -91,7 +91,9 @@ if not state_path.exists():
             "partitions": []
         }
     }
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    temporary_state = state_path.with_suffix(".json.tmp")
+    temporary_state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    temporary_state.replace(state_path)
 PY
 
 "$SCRIPT_DIR/deslop-inventory.py" --write

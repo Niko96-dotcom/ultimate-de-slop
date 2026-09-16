@@ -49,7 +49,7 @@ ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" || {
 
 python3 "$SCRIPT_DIR/deslop_finding_id.py" validate "$FINDING_ID" --prefix deslop-run-checks || exit 1
 
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+timestamp="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))')"
 run_dir="$(python3 "$SCRIPT_DIR/deslop_finding_id.py" run-dir "$ROOT" checks "$FINDING_ID" "$timestamp")" || exit 1
 mkdir -p "$run_dir"
 commands_json="$run_dir/commands.json"
@@ -57,6 +57,8 @@ allowed_commands_json="$run_dir/allowed_commands.json"
 results_jsonl="$run_dir/results.jsonl"
 checks_jsonl="$run_dir/checks.jsonl"
 checks_json="$run_dir/checks.json"
+# Also binds skipped evidence. A failed stamping operation must fail the stage.
+trap 'python3 "$SCRIPT_DIR/deslop-proof.py" "$ROOT" "$FINDING_ID" "$checks_json"' EXIT
 
 python3 - "$ROOT" "$FINDING_ID" "$commands_json" "$SCRIPT_DIR" <<'PY'
 import json

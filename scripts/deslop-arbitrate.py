@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shlex
 import subprocess
@@ -200,6 +201,9 @@ def strip_safe_env(tokens: list[str]) -> list[str]:
     return rest
 
 
+MAKE_SAFE_TARGETS = frozenset({"test", "lint", "check", "typecheck"})
+
+
 def is_safe_expected_check(command_text: str) -> bool:
     value = command_text.strip()
     if not value or has_unsafe_check_syntax(value):
@@ -213,6 +217,10 @@ def is_safe_expected_check(command_text: str) -> bool:
         return len(tokens) == 3 and bool(tokens[2].strip())
     if tokens[:2] in (["npm", "--prefix"], ["pnpm", "--dir"]):
         return len(tokens) == 5 and tokens[3] == "run" and bool(tokens[2].strip()) and bool(tokens[4].strip())
+    # Narrow make support: only exact `make <test|lint|check|typecheck>`.
+    # Arbitrary make goals stay blocked.
+    if tokens[:1] == ["make"]:
+        return len(tokens) == 2 and tokens[1] in MAKE_SAFE_TARGETS
     return any(tuple(tokens[: len(prefix)]) == prefix for prefix in SAFE_CHECK_PREFIXES)
 
 
@@ -331,10 +339,50 @@ def finding_key(finding: dict[str, Any]) -> str:
     return "||".join([category, title, files, "|".join(sorted(claims))])
 
 
+VAGUE_EVIDENCE_PHRASES = frozenset(
+    {
+        "fixed",
+        "done",
+        "ok",
+        "lgtm",
+        "good",
+        "fine",
+        "works",
+        "verified",
+        "passed",
+        "all good",
+        "no issues",
+        "looks good",
+        "looks fine",
+        "seems good",
+        "seems fine",
+        "fixed bug",
+    }
+)
+
+
+def is_vague_claim_text(raw_claim: str) -> bool:
+    stripped = str(raw_claim or "").strip()
+    if len(stripped) < 10:
+        return True
+    normalized = normalize(stripped)
+    if not normalized or len(normalized.split()) < 2:
+        return True
+    if sum(c.isalnum() for c in stripped) < 8:
+        return True
+    generic = stripped.lower().strip(" .!?,;:'\"`").strip()
+    if generic in VAGUE_EVIDENCE_PHRASES:
+        return True
+    return False
+
+
 def has_concrete_evidence_item(item: dict[str, Any]) -> bool:
     raw_claim = str(item.get("claim", ""))
     claim = normalize(raw_claim)
     if not item.get("file") or not claim:
+        return False
+    # Reject mere punctuation / vague optimism even when lines/symbol exist.
+    if is_vague_claim_text(raw_claim):
         return False
     if item.get("lines") or item.get("symbol"):
         return True
@@ -367,6 +415,8 @@ def validate_candidate(candidate: dict[str, Any], config: dict[str, Any]) -> lis
         confidence = float(candidate.get("confidence", -1))
     except (TypeError, ValueError):
         confidence = -1
+    if isinstance(candidate.get("confidence"), bool) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        reasons.append("confidence must be a finite number between 0 and 1")
     thresholds = config.get("confidence_thresholds", {})
     if severity == "P3":
         reasons.append("P3 is not loop fuel")
@@ -393,8 +443,11 @@ def validate_candidate(candidate: dict[str, Any], config: dict[str, Any]) -> lis
             reasons.append("evidence is speculative or lacks concrete code detail")
     if not candidate.get("files"):
         reasons.append("missing files")
-    if not str(candidate.get("why_it_matters", "")).strip():
+    why = str(candidate.get("why_it_matters", "") or "").strip()
+    if not why:
         reasons.append("missing why_it_matters")
+    elif len(why) < 8 or sum(c.isalnum() for c in why) < 5:
+        reasons.append("why_it_matters is vague or mere punctuation; explain concrete consequence")
     proposed = normalize(candidate.get("proposed_fix"))
     if len(proposed) < 8 or proposed in {"clean up", "refactor", "make cleaner", "improve code"}:
         reasons.append("vague or missing proposed_fix")
@@ -484,7 +537,9 @@ def load_state(root: Path, config: dict[str, Any], findings: list[dict[str, Any]
 
 def write_state(root: Path, state: dict[str, Any]) -> None:
     path = root / ".deslop" / "state.json"
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    temporary_state = path.with_suffix(".json.tmp")
+    temporary_state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    temporary_state.replace(path)
 
 
 def arbitrate(root: Path, review_path: Path, run_dir: Path | None, json_output: bool) -> dict[str, Any]:
@@ -503,6 +558,8 @@ def arbitrate(root: Path, review_path: Path, run_dir: Path | None, json_output: 
     findings_path = root / ".deslop" / "findings.jsonl"
     findings = read_findings(findings_path)
     by_key = {finding_key(item): item for item in findings if finding_key(item)}
+    from deslop_snapshot import snapshot
+    current_manifest = snapshot(root)
     accepted: list[str] = []
     rejected: list[dict[str, Any]] = []
     merged: list[dict[str, Any]] = []
@@ -515,6 +572,21 @@ def arbitrate(root: Path, review_path: Path, run_dir: Path | None, json_output: 
         candidate = normalize_candidate(raw)
         key = finding_key(candidate)
         existing = by_key.get(key)
+        source_snapshot = {p: current_manifest.get(p) for p in candidate.get("files", [])}
+        if existing and existing.get("status") in FINAL_STATES:
+            previous = existing.get("source_snapshot")
+            verified_manifest = (existing.get("verification") or {}).get("worktree_manifest")
+            if isinstance(verified_manifest, dict):
+                previous = {p: verified_manifest.get(p) for p in candidate.get("files", [])}
+            newly_eligible = (existing.get("status") == "rejected"
+                              and not validate_candidate(candidate, config)
+                              and any("confidence below" in str(reason) or "max_active_findings" in str(reason)
+                                      for reason in existing.get("rejection_reasons", [])))
+            unbound_resolution = previous is None and existing.get("status") in {"verified", "false_positive"}
+            if newly_eligible or unbound_resolution or (isinstance(previous, dict) and previous != source_snapshot):
+                # Reconsider fresh evidence after relevant source changed;
+                # preserve the terminal record as history instead of reopening it.
+                existing = None
         if existing:
             merged.append({"into": existing.get("id"), "title": candidate.get("title"), "reason": "duplicate dedupe key"})
             if existing.get("status") not in FINAL_STATES:
@@ -527,6 +599,7 @@ def arbitrate(root: Path, review_path: Path, run_dir: Path | None, json_output: 
             reasons.append("max_active_findings reached")
         new_id = next_id(findings)
         candidate["id"] = new_id
+        candidate["source_snapshot"] = source_snapshot
         candidate.setdefault("dependencies", [])
         candidate.setdefault("reviewer", "deslop-reviewer")
         candidate.setdefault("attempts", 0)

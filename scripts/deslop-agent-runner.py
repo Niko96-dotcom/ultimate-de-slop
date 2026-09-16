@@ -129,7 +129,7 @@ def codex_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand
             "--cd",
             str(args.root),
             "--sandbox",
-            args.sandbox,
+            "read-only" if is_read_only(args.sandbox, args.kind) else args.sandbox,
             "--output-schema",
             str(args.schema),
             "--output-last-message",
@@ -143,9 +143,7 @@ def codex_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand
 
 
 def claude_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand:
-    permission = args.permission_mode
-    if permission is None:
-        permission = "default" if is_read_only(args.sandbox, args.kind) else "acceptEdits"
+    permission = "plan" if is_read_only(args.sandbox, args.kind) else (args.permission_mode or "acceptEdits")
     schema_text = args.schema.read_text()
     command = [
         "claude",
@@ -159,19 +157,44 @@ def claude_adapter(args: argparse.Namespace, model: str | None) -> AdapterComman
     ]
     add_model(command, model)
     command.extend(["--permission-mode", permission])
+    if is_read_only(args.sandbox, args.kind):
+        command.extend(["--tools", "Read,Glob,Grep"])
     for directory in args.add_dir:
         command.extend(["--add-dir", directory])
     return AdapterCommand("claude", "claude", command, permission_mode=permission)
 
 
+def child_environment(args: argparse.Namespace, adapter: AdapterCommand) -> dict[str, str]:
+    env = os.environ.copy()
+    if adapter.harness == "opencode" and is_read_only(args.sandbox, args.kind):
+        # Supply the actual role policy at invocation time: merely checking a
+        # bundled template says nothing about the user's installed agent.
+        raw = env.get("OPENCODE_CONFIG_CONTENT", "{}")
+        config = json.loads(raw)
+        if not isinstance(config, dict):
+            raise ValueError("OPENCODE_CONFIG_CONTENT must be an object")
+        permissions = {"*": "deny", "read": "allow", "glob": "allow", "grep": "allow",
+                       "list": "allow", "edit": "deny", "bash": "deny", "task": "deny"}
+        config["permission"] = permissions
+        agents = config.setdefault("agent", {})
+        role = agents.setdefault(role_agent(args.kind), {})
+        role["permission"] = permissions.copy()
+        role["mode"] = "primary"
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config)
+        env.pop("OPENCODE_PERMISSION", None)
+    return env
+
+
 def opencode_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand:
+    agent = role_agent(args.kind)
+    permission_mode = "runtime-deny-mutations" if is_read_only(args.sandbox, args.kind) else f"agent:{agent}"
     command = [
         "opencode",
         "run",
         "--dir",
         str(args.root),
         "--agent",
-        role_agent(args.kind),
+        agent,
         "--format",
         "json",
         "--file",
@@ -179,11 +202,11 @@ def opencode_adapter(args: argparse.Namespace, model: str | None) -> AdapterComm
     ]
     add_model(command, model)
     command.append(prompt_file_message(args.prompt))
-    return AdapterCommand("opencode", "opencode", command)
+    return AdapterCommand("opencode", "opencode", command, permission_mode=permission_mode)
 
 
 def cursor_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand:
-    mode = args.permission_mode or ("plan" if is_read_only(args.sandbox, args.kind) else None)
+    mode = "ask" if is_read_only(args.sandbox, args.kind) else args.permission_mode
     command = [
         "cursor-agent",
         "--print",
@@ -195,9 +218,8 @@ def cursor_adapter(args: argparse.Namespace, model: str | None) -> AdapterComman
     ]
     if mode:
         command.extend(["--mode", mode])
+    # Read-only roles never get --force, even under danger-full-access.
     if not is_read_only(args.sandbox, args.kind):
-        command.append("--force")
-    elif args.sandbox == "danger-full-access":
         command.append("--force")
     add_model(command, model)
     command.append(prompt_file_message(args.prompt))
@@ -246,12 +268,14 @@ def commandcode_adapter(args: argparse.Namespace, model: str | None) -> AdapterC
 
 
 def hermes_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand:
-    if is_read_only(args.sandbox, args.kind):
+    read_only = is_read_only(args.sandbox, args.kind)
+    if read_only:
         toolsets = "read,grep,find,ls"
     else:
         toolsets = "read,grep,find,ls,write,edit,bash"
     command = ["hermes", "--skills", "ultimate-de-slop", "--toolsets", toolsets]
-    if args.sandbox == "danger-full-access" and os.environ.get("DESLOP_HERMES_YOLO") == "1":
+    # Read-only roles never get --yolo, even under danger-full-access.
+    if not read_only and args.sandbox == "danger-full-access" and os.environ.get("DESLOP_HERMES_YOLO") == "1":
         command.append("--yolo")
     add_model(command, model)
     command.extend(["-z", prompt_file_message(args.prompt)])
@@ -383,6 +407,15 @@ def run_process(args: argparse.Namespace, adapter: AdapterCommand, diagnostic: d
     args.last_message.parent.mkdir(parents=True, exist_ok=True)
     args.runner_json.parent.mkdir(parents=True, exist_ok=True)
 
+    from deslop_snapshot import snapshot
+    artifacts = {str(p.resolve().relative_to(args.root)) for p in
+                 (args.raw_output, args.last_message, args.runner_json) if p.resolve().is_relative_to(args.root)}
+    def content_snapshot():
+        return {p: digest for p, digest in snapshot(args.root).items() if p not in artifacts}
+    before_content = content_snapshot() if is_read_only(args.sandbox, args.kind) else None
+    control_paths = [args.root / ".deslop" / name for name in
+                     ("config.json", "state.json", "findings.jsonl", "inventory.json", "index.md")]
+    before_control = {p: p.read_bytes() if p.exists() else None for p in control_paths}
     started = time.monotonic()
     last_output = started
     with args.prompt.open("rb") as prompt_handle, args.raw_output.open("wb") as raw_handle:
@@ -393,7 +426,13 @@ def run_process(args: argparse.Namespace, adapter: AdapterCommand, diagnostic: d
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=child_environment(args, adapter),
         )
+        previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        def forward_stop(signum, _frame):
+            terminate_process_group(process, args.grace_seconds)
+        for sig in previous_handlers:
+            signal.signal(sig, forward_stop)
         diagnostic["status"] = "running"
         selector = selectors.DefaultSelector()
         assert process.stdout is not None
@@ -452,11 +491,27 @@ def run_process(args: argparse.Namespace, adapter: AdapterCommand, diagnostic: d
                     break
         finally:
             selector.close()
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
 
     if exit_code is None:
         exit_code = process.returncode
     if status == "completed" and exit_code:
         status = "failed"
+    changed_control = [p for p, old in before_control.items()
+                       if (p.read_bytes() if p.exists() else None) != old]
+    if changed_control:
+        for p in changed_control:
+            if p.exists():
+                (args.runner_json.parent / ("unauthorized-" + p.name)).write_bytes(p.read_bytes())
+            if before_control[p] is None:
+                p.unlink(missing_ok=True)
+            else:
+                p.write_bytes(before_control[p])
+        status, exit_code = "control_state_mutation", 1
+        diagnostic["unauthorized_control_paths"] = [str(p) for p in changed_control]
+    if before_content is not None and content_snapshot() != before_content:
+        status, exit_code = "read_only_mutation", 1
     copy_raw_to_last_message(args.raw_output, args.last_message, adapter.harness)
     diagnostic.update(
         {

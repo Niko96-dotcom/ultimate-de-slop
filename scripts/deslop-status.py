@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import shlex
 import sys
 from collections import Counter
 from pathlib import Path
@@ -194,6 +195,8 @@ def build_loop_summary(
 ) -> dict[str, Any]:
     outcome = state.get("loop_outcome") if isinstance(state.get("loop_outcome"), dict) else {}
     stop = state.get("stop") if isinstance(state.get("stop"), dict) else {}
+    goal = state.get("loop_goal") if isinstance(state.get("loop_goal"), dict) else {}
+    progress = state.get("loop_progress") if isinstance(state.get("loop_progress"), dict) else {}
     verified_ids = [str(item) for item in (outcome.get("verified_ids") or []) if str(item).strip()]
     by_id = {str(item.get("id")): item for item in findings}
     verified_rows = []
@@ -208,21 +211,53 @@ def build_loop_summary(
         ]
 
     stop_reason = outcome.get("stop_reason") or stop.get("reason")
-    priorities = parse_priority_list(outcome.get("priority"))
+    priorities = parse_priority_list(outcome.get("priority") or goal.get("priority"))
     next_for_priority = choose_next(findings, priorities) if priorities else choose_next(findings)
-    note = priority_note_for(findings, outcome)
+    note = priority_note_for(findings, outcome if outcome else {"priority": goal.get("priority")})
     accepted_remaining = remaining_by_severity(findings, "accepted")
+    goal_consumed = goal.get("consumed") if isinstance(goal.get("consumed"), dict) else {}
+    goal_limits = goal.get("limits") if isinstance(goal.get("limits"), dict) else {}
+    # Scope-limited success: clean claims only cover the recorded priority scope.
+    scope = outcome.get("goal_scope") or goal.get("scope") or ("until-clean" if goal else None)
+    try:
+        inventory_payload = load_json(root / ".deslop" / "inventory.json", {})
+        inventory_truncated = bool(inventory_payload.get("truncated")) if isinstance(inventory_payload, dict) else False
+    except Exception:
+        inventory_truncated = False
+    goal_status = goal.get("status")
+    if goal_status == "complete":
+        from deslop_loop_support import content_fingerprint
+        try:
+            if content_fingerprint(root) != goal.get("completed_fingerprint"):
+                goal_status = "stale"
+        except OSError:
+            goal_status = "stale"
+    in_flight = goal.get("in_flight") if isinstance(goal.get("in_flight"), dict) else None
     return {
         "accepted_remaining": accepted_remaining,
+        "blocked": summarize_findings(findings, "blocked"),
+        "elapsed_seconds": outcome.get("elapsed_seconds", goal_consumed.get("elapsed_seconds")),
+        "empty_sweeps_completed": progress.get("consecutive_empty_review_waves"),
+        "empty_sweeps_required": goal.get("empty_sweeps_required") if goal else None,
         "false_positives": summarize_findings(findings, "false_positive"),
+        "fixed_unverified": summarize_findings(findings, "fixed_unverified"),
+        "fixing": summarize_findings(findings, "fixing"),
+        "goal_reason": goal.get("reason"),
+        "goal_scope": scope,
+        "goal_status": goal_status,
+        "goal_in_flight": in_flight,
+        "inventory_truncated": inventory_truncated,
         "halt_finding_id": outcome.get("halt_finding_id"),
         "halt_status": outcome.get("halt_status"),
         "iterations_completed": outcome.get("iterations_completed"),
         "max_iterations": outcome.get("max_iterations"),
+        "max_review_calls": outcome.get("max_review_calls", goal_limits.get("max_review_calls")),
+        "max_seconds": outcome.get("max_seconds", goal_limits.get("max_seconds")),
         "needs_human": summarize_findings(findings, "needs_human"),
         "next": next_for_priority,
-        "priority": outcome.get("priority"),
+        "priority": outcome.get("priority") or goal.get("priority"),
         "priority_note": note,
+        "review_calls_completed": outcome.get("review_calls_completed", goal_consumed.get("review_calls")),
         "runner_diagnostic": latest_runner_diagnostic(root),
         "stop_reason": stop_reason,
         "verified": verified_rows,
@@ -258,44 +293,35 @@ def build_status(root: Path) -> dict[str, Any]:
 
 def suggested(next_id: str | None, loop_summary: dict[str, Any] | None = None) -> list[str]:
     summary = loop_summary or {}
-    needs_human = summary.get("needs_human") or []
-    commands: list[str] = []
-    if needs_human:
-        finding_id = needs_human[0].get("id")
-        commands.append(f"scripts/deslop-resume.py {finding_id} --as accepted --reason 'human approved retry'")
-    if next_id:
-        commands.extend(
-            [
-                "scripts/deslop-continue.sh",
-                "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1",
-                f"scripts/deslop-fix.sh {next_id}",
-                f"scripts/deslop-run-checks.sh {next_id}",
-                f"scripts/deslop-verify.sh {next_id}",
-                f"scripts/deslop-finalize.py {next_id}",
-            ]
-        )
-        return commands
+    scripts = Path(__file__).resolve().parent
+    def command(name: str) -> str:
+        return shlex.quote(str(scripts / name))
+    status = command("deslop-status.py")
+    if summary.get("goal_scope"):
+        if summary.get("goal_status") == "stale":
+            return [command("deslop-continue.sh")]
+        if summary.get("goal_status") in {"exhausted", "complete", "stopped", "failed"}:
+            return [status]
+        return [command("deslop-continue.sh")]
+    if any(summary.get(k) for k in ("needs_human", "blocked", "fixing", "fixed_unverified")):
+        return [status]
     if summary.get("priority_note"):
-        commands.extend(
-            [
-                "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1,P2",
-                "scripts/deslop-status.py",
-            ]
-        )
-        return commands
-    commands.extend(
-        [
-            "scripts/deslop-continue.sh",
-            "scripts/deslop-loop.sh --max-iterations 5 --priority P0,P1",
-            "scripts/deslop-review.sh",
-        ]
-    )
-    return commands
+        return [command("deslop-loop.sh") + " --until-clean --priority P0,P1,P2", status]
+    return [command("deslop-continue.sh") if next_id else command("deslop-loop.sh") + " --until-clean"]
 
 
 def print_loop_summary(summary: dict[str, Any]) -> None:
     print("Loop outcome")
     print(f"  Stop reason: {summary.get('stop_reason') or 'NONE'}")
+    if summary.get("goal_scope") or summary.get("goal_status"):
+        print(f"  Goal scope: {summary.get('goal_scope') or 'NONE'} (scope-limited)")
+        print(f"  Goal status: {summary.get('goal_status') or 'NONE'} reason={summary.get('goal_reason') or 'NONE'}")
+    if summary.get("review_calls_completed") is not None or summary.get("max_review_calls") is not None:
+        print(f"  Reviews: {summary.get('review_calls_completed')} / {summary.get('max_review_calls')}")
+    if summary.get("elapsed_seconds") is not None or summary.get("max_seconds") is not None:
+        print(f"  Elapsed: {summary.get('elapsed_seconds')}s / {summary.get('max_seconds')}s")
+    if summary.get("empty_sweeps_completed") is not None:
+        print(f"  Empty sweeps: {summary.get('empty_sweeps_completed')} / {summary.get('empty_sweeps_required')}")
     if summary.get("priority_note"):
         print(f"  Priority note: {summary['priority_note']}")
     verified = summary.get("verified") or []
@@ -326,6 +352,16 @@ def print_loop_summary(summary: dict[str, Any]) -> None:
             print(f"    - {item.get('id')}{suffix}")
             for detail in item.get("details") or []:
                 print(f"      {detail}")
+    for label in ("blocked", "fixed_unverified", "fixing"):
+        rows = summary.get(label) or []
+        if rows:
+            print(f"  {label.replace('_', ' ').title()} (requires explicit recovery):")
+            for item in rows:
+                title = item.get("title") or ""
+                suffix = f" {title}" if title else ""
+                print(f"    - {item.get('id')}{suffix}")
+                for detail in item.get("details") or []:
+                    print(f"      {detail}")
     diagnostic = summary.get("runner_diagnostic")
     if isinstance(diagnostic, dict) and diagnostic.get("status"):
         reason = diagnostic.get("unsupported_reason") or diagnostic.get("status")
@@ -343,7 +379,7 @@ def main() -> int:
         print(json.dumps(status, indent=2, sort_keys=True))
     else:
         print("Ultimate De-Slop Status")
-        print(f"Score: {status['score']}")
+        print(f"Heuristic score (not a completion gate): {status['score']}")
         print(format_agent_timeouts(root, harness=resolve_harness(script_dir=Path(__file__).resolve().parent)))
         print(f"Findings by status: {status['counts_by_status']}")
         print(f"Findings by severity: {status['counts_by_severity']}")

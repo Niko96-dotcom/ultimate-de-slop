@@ -149,7 +149,7 @@ def scan_file(root: Path, path: Path) -> FileInfo | None:
     )
 
 
-def iter_files(root: Path, ignored: list[str], max_files: int) -> tuple[list[Path], int]:
+def iter_files(root: Path, ignored: list[str], max_files: int) -> tuple[list[Path], int, bool]:
     result: list[Path] = []
     skipped = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -170,8 +170,8 @@ def iter_files(root: Path, ignored: list[str], max_files: int) -> tuple[list[Pat
                 continue
             result.append(root / rel)
             if len(result) >= max_files:
-                return result, skipped
-    return result, skipped
+                return result, skipped, True
+    return result, skipped, False
 
 
 def detect_package_scripts(root: Path, files: list[FileInfo]) -> list[dict[str, str]]:
@@ -229,7 +229,12 @@ def detect_package_scripts(root: Path, files: list[FileInfo]) -> list[dict[str, 
 
 def build_inventory(root: Path, max_files: int) -> dict[str, Any]:
     config = load_config(root)
-    paths, ignored_count = iter_files(root, config.get("ignored_paths", DEFAULT_IGNORED), max_files)
+    iter_result = iter_files(root, config.get("ignored_paths", DEFAULT_IGNORED), max_files)
+    if len(iter_result) == 3:
+        paths, ignored_count, candidate_truncated = iter_result
+    else:  # backward compat for older tuple shape
+        paths, ignored_count = iter_result  # type: ignore[misc]
+        candidate_truncated = len(paths) >= max_files
     scanned: list[FileInfo] = []
     skipped_binary_or_large = 0
     for path in paths:
@@ -285,13 +290,21 @@ def build_inventory(root: Path, max_files: int) -> dict[str, Any]:
         }
     )
 
+    # No cap on risk partitions: every top-level source partition is reported
+    # so reviewers cannot mistake a sampled top-30 for an exhaustive inventory.
     partitions = [
         {"path": key, **value}
         for key, value in sorted(
             partition_stats.items(),
             key=lambda item: (-item[1]["source_lines"], item[0]),
         )
-    ][:30]
+    ]
+
+    over_500_capped = over_500[:50]
+    over_1000_capped = over_1000[:50]
+    todo_sorted = sorted(todo_files, key=lambda item: (item.path))
+    todo_capped = todo_sorted[:50]
+    largest_total = len(scanned)
 
     inventory = {
         "version": 1,
@@ -300,34 +313,61 @@ def build_inventory(root: Path, max_files: int) -> dict[str, Any]:
         "candidate_file_count": len(paths),
         "ignored_path_count": ignored_count,
         "skipped_binary_or_large_count": skipped_binary_or_large,
+        "max_files": max_files,
+        "candidate_truncated": bool(candidate_truncated),
+        "truncated": bool(candidate_truncated),
+        "truncation_note": (
+            "candidate file list hit --max-files; inventory is sampled, not exhaustive"
+            if candidate_truncated
+            else "candidate file list complete within --max-files"
+        ),
         "largest_files": [asdict(item) for item in largest],
-        "files_over_500_lines": [asdict(item) for item in over_500[:50]],
-        "files_over_1000_lines": [asdict(item) for item in over_1000[:50]],
+        "largest_files_total": largest_total,
+        "largest_files_truncated": largest_total > len(largest),
+        "files_over_500_lines": [asdict(item) for item in over_500_capped],
+        "files_over_500_lines_total": len(over_500),
+        "files_over_500_lines_truncated": len(over_500) > len(over_500_capped),
+        "files_over_1000_lines": [asdict(item) for item in over_1000_capped],
+        "files_over_1000_lines_total": len(over_1000),
+        "files_over_1000_lines_truncated": len(over_1000) > len(over_1000_capped),
         "todo_fixme_counts": {
             "total_todo": sum(item.todo_count for item in todo_files),
             "total_fixme": sum(item.fixme_count for item in todo_files),
-            "files": [asdict(item) for item in sorted(todo_files, key=lambda item: (item.path))[:50]],
+            "files": [asdict(item) for item in todo_capped],
+            "files_total": len(todo_sorted),
+            "files_truncated": len(todo_sorted) > len(todo_capped),
         },
         "likely_source_directories": [
-            {"path": path, "source_file_count": count} for path, count in source_dirs.most_common(30)
+            {"path": path, "source_file_count": count} for path, count in source_dirs.most_common()
         ],
         "test_directories": [
-            {"path": path, "test_file_count": count} for path, count in test_dirs.most_common(30)
+            {"path": path, "test_file_count": count} for path, count in test_dirs.most_common()
         ],
         "detected_tooling_files": tooling_files,
         "detected_commands": detect_package_scripts(root, scanned),
         "risk_partitions": partitions,
+        "risk_partition_count": len(partitions),
+        "risk_partitions_truncated": False,
     }
     return inventory
 
 
 def render_index(inventory: dict[str, Any]) -> str:
+    truncated = bool(inventory.get("candidate_truncated") or inventory.get("truncated"))
+    truncation_line = (
+        "Inventory sampling: TRUNCATED at --max-files "
+        f"({inventory.get('candidate_file_count')} candidates); do not treat file lists as exhaustive."
+        if truncated
+        else "Inventory sampling: complete within --max-files; file lists below may still be top-N samples."
+    )
     lines = [
         "# Ultimate De-Slop Index",
         "",
         f"Repo root: `{inventory['repo_root']}`",
         f"Scanned files: {inventory['scanned_file_count']}",
         f"Skipped binary or giant files: {inventory['skipped_binary_or_large_count']}",
+        truncation_line,
+        f"Risk partitions: all {inventory.get('risk_partition_count', len(inventory.get('risk_partitions', [])))} reported (no top-N cap).",
         "",
         "## Detected Commands",
         "",
@@ -338,20 +378,35 @@ def render_index(inventory: dict[str, Any]) -> str:
             lines.append(f"- `{command['command']}` ({command['source']})")
     else:
         lines.append("- No deterministic project commands detected.")
-    lines.extend(["", "## Largest Files", ""])
-    for item in inventory.get("largest_files", [])[:10]:
+    largest = inventory.get("largest_files", [])
+    largest_total = inventory.get("largest_files_total", len(largest))
+    largest_truncated = inventory.get("largest_files_truncated", False)
+    lines.extend(["", "## Largest Files (display top 10; sampled, not exhaustive)", ""])
+    for item in largest[:10]:
         lines.append(f"- `{item['path']}`: {item['lines']} lines, {item['bytes']} bytes")
-    lines.extend(["", "## Files Over 500 Lines", ""])
+    if len(largest) > 10 or largest_truncated:
+        lines.append(
+            f"- Display note: showing top 10 of {len(largest)} sampled largest files "
+            f"(scanned total {largest_total}; truncated={bool(largest_truncated)})."
+        )
+    lines.extend(["", "## Files Over 500 Lines (display top 20; sampled, not exhaustive)", ""])
     over_500 = inventory.get("files_over_500_lines", [])
+    over_500_total = inventory.get("files_over_500_lines_total", len(over_500))
+    over_500_truncated = inventory.get("files_over_500_lines_truncated", False)
     if over_500:
         for item in over_500[:20]:
             lines.append(f"- `{item['path']}`: {item['lines']} lines")
+        if len(over_500) >= 20 or over_500_truncated:
+            lines.append(
+                f"- Display note: showing up to top 20 of {over_500_total} files over 500 lines "
+                f"(truncated={bool(over_500_truncated)})."
+            )
     else:
         lines.append("- None detected.")
-    lines.extend(["", "## Risk Partitions", ""])
+    lines.extend(["", "## Risk Partitions (all listed; no display sampling)", ""])
     partitions = inventory.get("risk_partitions", [])
     if partitions:
-        for item in partitions[:20]:
+        for item in partitions:
             lines.append(
                 f"- `{item['path']}`: {item['source_lines']} source lines, "
                 f"{item['file_count']} files, {item['large_files']} large files, "

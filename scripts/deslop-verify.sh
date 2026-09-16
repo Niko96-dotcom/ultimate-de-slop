@@ -98,7 +98,7 @@ for candidate in scan_balanced(text):
     if isinstance(parsed, dict):
         valid.append(parsed)
 
-required = {"finding_id", "verdict", "confidence", "evidence", "concerns", "required_follow_up"}
+required = {"verdict", "confidence", "evidence", "concerns", "required_follow_up"}
 obj = next((item for item in reversed(valid) if required.issubset(item)), None)
 if obj is None:
     if valid:
@@ -110,7 +110,14 @@ if obj is None:
     else:
         print(f"could not extract JSON object from {source}", file=sys.stderr)
     raise SystemExit(1)
-obj["finding_id"] = expected_finding_id
+reported = obj.get("finding_id")
+if reported is None or (isinstance(reported, str) and not reported.strip()):
+    obj["finding_id"] = expected_finding_id
+elif str(reported).strip() != expected_finding_id:
+    print(f"verify finding_id mismatch: expected {expected_finding_id}, got {reported!r}", file=sys.stderr)
+    raise SystemExit(1)
+else:
+    obj["finding_id"] = expected_finding_id
 for key in ("evidence", "concerns", "required_follow_up"):
     value = obj.get(key)
     if value is None:
@@ -157,7 +164,7 @@ if [ -z "$CHECKS_JSON" ] || [ ! -f "$CHECKS_JSON" ]; then
   exit 1
 fi
 
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+timestamp="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))')"
 run_dir="$(python3 "$SCRIPT_DIR/deslop_finding_id.py" run-dir "$ROOT" verify "$FINDING_ID" "$timestamp")" || exit 1
 mkdir -p "$run_dir"
 finding_json="$run_dir/finding.json"
@@ -266,7 +273,7 @@ if ! extract_json "$last_message" "$verify_json" "$FINDING_ID" && ! extract_json
   exit 1
 fi
 
-python3 - "$verify_json" "$finding_json" <<'PY'
+python3 - "$verify_json" "$finding_json" "$CHECKS_JSON" "$FINDING_ID" "$SCRIPT_DIR" <<'PY'
 import json
 import re
 import sys
@@ -274,11 +281,49 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 finding = json.loads(Path(sys.argv[2]).read_text())
+checks_path = Path(sys.argv[3])
+expected_id = sys.argv[4]
 data = json.loads(path.read_text())
 verdict = str(data.get("verdict", "")).upper()
 evidence = [str(item).strip() for item in (data.get("evidence") or []) if str(item).strip()]
 concerns = [str(item).strip() for item in (data.get("concerns") or []) if str(item).strip()]
 follow_up = [str(item).strip() for item in (data.get("required_follow_up") or []) if str(item).strip()]
+
+reported_verify_id = str(data.get("finding_id") or "").strip()
+if reported_verify_id and reported_verify_id != expected_id:
+    print(f"deslop-verify: error: verify finding_id mismatch: expected {expected_id}, got {reported_verify_id!r}", file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    checks = json.loads(checks_path.read_text()) if checks_path.exists() else None
+except (json.JSONDecodeError, OSError):
+    checks = None
+
+def _normalize(text) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+VAGUE_EVIDENCE_PHRASES = frozenset({
+    "fixed", "done", "ok", "lgtm", "good", "fine", "works",
+    "verified", "passed", "all good", "no issues", "looks good",
+    "looks fine", "seems good", "seems fine", "fixed bug",
+})
+
+def is_vague_claim_text(raw_claim: str) -> bool:
+    stripped = str(raw_claim or "").strip()
+    if len(stripped) < 10:
+        return True
+    normalized = _normalize(stripped)
+    if not normalized or len(normalized.split()) < 2:
+        return True
+    if sum(c.isalnum() for c in stripped) < 8:
+        return True
+    generic = stripped.lower().strip(" .!?,;:'\"`").strip()
+    if generic in VAGUE_EVIDENCE_PHRASES:
+        return True
+    return False
+
+sys.path.insert(0, sys.argv[5])
+from deslop_verification_policy import checks_failed, finding_changed_files, proof_matches
 
 def looks_like_test_path(value: str) -> bool:
     lowered = value.replace("\\", "/").lower()
@@ -312,18 +357,28 @@ def expects_behavioral_coverage(item: dict) -> bool:
 errors = []
 if not evidence:
     errors.append("evidence must be a non-empty list explaining the verdict")
+elif not any(not is_vague_claim_text(item) for item in evidence):
+    errors.append("evidence is vague or mere punctuation; provide concrete file/line/symbol detail explaining the verdict")
 if verdict == "NEEDS_HUMAN" and not concerns and not follow_up:
     errors.append("NEEDS_HUMAN requires non-empty concerns or required_follow_up")
+if isinstance(checks, dict) and str(checks.get("finding_id") or "").strip() != expected_id:
+    print(f"deslop-verify: error: checks finding_id mismatch: expected {expected_id}, got {checks.get('finding_id')!r}", file=sys.stderr)
+    raise SystemExit(1)
+if not proof_matches(checks, finding, Path.cwd()):
+    raise SystemExit("checks evidence is stale or belongs to another fix attempt")
+changed = finding_changed_files(finding)
+if verdict == "PASS" and not changed:
+    errors.append("PASS rejected: last_fix.changed_files is empty; fix artifacts must identify actual changed files")
+if verdict == "PASS" and checks_failed(checks, finding_id=expected_id, finding=finding, verify=data):
+    errors.append("PASS rejected: checks are missing, blocked, failed, mismatched, or lack executed evidence")
 if verdict == "PASS" and expects_behavioral_coverage(finding):
-    changed = []
-    last_fix = finding.get("last_fix") if isinstance(finding.get("last_fix"), dict) else {}
-    raw_changed = last_fix.get("changed_files") or []
-    if isinstance(raw_changed, list):
-        changed = [str(entry) for entry in raw_changed]
-    if not any(looks_like_test_path(entry) for entry in changed):
+    if not any(looks_like_test_path(entry) for entry in changed) and not any(
+        re.search(r"(?:tests?/|test_[\w]+|[\w]+\.(?:test|spec)\.)", item, re.I)
+        for item in evidence
+    ):
         errors.append(
             "PASS rejected: acceptance criteria or expected checks imply behavioral coverage, "
-            "but last_fix.changed_files includes no test/spec file. Add a focused test or return NEEDS_HUMAN."
+            "but last_fix.changed_files includes no test/spec file. Name the existing covering test and its result, add a focused test, or return NEEDS_HUMAN."
         )
 if errors:
     print(f"deslop-verify: error: thin verifier verdict rejected for {verdict or 'UNKNOWN'}:", file=sys.stderr)
@@ -333,4 +388,5 @@ if errors:
 
 print(f"Verifier verdict: {data.get('verdict', 'UNKNOWN')}")
 PY
+python3 "$SCRIPT_DIR/deslop-proof.py" "$ROOT" "$FINDING_ID" "$verify_json"
 printf 'Verify JSON: %s\n' "$verify_json"

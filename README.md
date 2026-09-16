@@ -5,7 +5,7 @@
 [![GitHub Pages](https://img.shields.io/badge/landing-page-0f766e.svg)](https://niko96-dotcom.github.io/ultimate-de-slop/)
 [![Built for agent CLIs](https://img.shields.io/badge/agent--cli-Codex%20%7C%20Claude%20%7C%20OpenCode%20%7C%20Cursor-2563eb.svg)](#adapter-matrix)
 
-**Ultimate De-Slop is a local, auditable harness for bounded AI-agent code-quality repair loops.** It turns vague "clean this repo up" energy into a controlled pipeline: strict structural review, conservative arbitration, one-finding fixes, deterministic checks, independent verification, and explicit stop rules.
+**Ultimate De-Slop is a local, auditable harness for bounded AI-agent code-quality repair loops.** It turns vague "clean this repo up" energy into a controlled pipeline: strict structural review, conservative arbitration, one-finding fixes, deterministic checks, independent verification, and explicit stop rules. Bare invocation runs until no actionable slop remains at goal scope — robustly even with weak agents — or stops with an honest incomplete report.
 
 ![Ultimate De-Slop workflow hero](docs/assets/ultimate-de-slop-hero.png)
 
@@ -19,7 +19,8 @@ Most agent cleanup sessions fail in one of two ways: they either stop at a pile 
 | Weak or subjective findings | A read-only arbiter rejects vague, low-confidence, or stylistic work. |
 | Hidden agent output | Prompts, raw output, extracted JSON, check logs, and state are written under `.deslop/`. |
 | Verification drift | A separate read-only verifier judges the patch against the original finding and checks. |
-| Infinite loops | Iteration caps, attempt caps, stop files, dirty-tree checks, and verifier outcomes halt the run. |
+| Infinite loops | Fix-attempt, review-call, and seconds caps plus the two-sweep clean proof halt the run. |
+| False "done" | An empty queue alone is not clean; two complete consecutive empty sweeps at goal scope are required. |
 
 ## Quick Start
 
@@ -31,7 +32,7 @@ cd ultimate-de-slop
 scripts/install/install-codex.sh
 ```
 
-Run the harness inside the repository you want to improve:
+Run the harness inside the repository you want to improve (`SKILL_DIR` is the absolute directory containing the loaded `SKILL.md`; commands run with cwd set to your repo; the target repo never needs skill scripts):
 
 ```sh
 SKILL_DIR="$HOME/.codex/skills/ultimate-de-slop"
@@ -39,7 +40,15 @@ cd /path/to/your/repo
 "$SKILL_DIR/scripts/deslop-init.sh"
 "$SKILL_DIR/scripts/deslop-doctor.py"
 "$SKILL_DIR/scripts/deslop-status.py"
+"$SKILL_DIR/scripts/deslop-loop.sh" --until-clean
+```
+
+`--until-clean` defaults to scope `P0,P1,P2` with 100 total fix attempts, 200 review calls, and 28800 seconds. The goal persists in `.deslop/state.json`. Continue within caps with `deslop-continue.sh` (limits and usage retained); start a deliberate fresh goal only with `--new-goal`. Override caps explicitly:
+
+```sh
+"$SKILL_DIR/scripts/deslop-loop.sh" --until-clean --priority P0,P1
 "$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations 5 --priority P0,P1
+"$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations 5 --max-review-calls 50 --max-seconds 7200
 ```
 
 Use review-only mode when you want findings without edits:
@@ -60,10 +69,16 @@ Use review-only mode when you want findings without edits:
 | Verify | verifier agent | read-only | PASS, FAIL, NEEDS_HUMAN, or FALSE_POSITIVE |
 | Finalize | deterministic harness | `.deslop/` and optional git commit | updated state and next command |
 
+Each child-agent call is a fresh bounded invocation; memory between calls is disk state (`.deslop/`, git history, per-finding snapshots), never chat history. Reviewer, fixer, and verifier always run in separate contexts.
+
 ## Safety Defaults
 
 | Default | Value |
 | --- | --- |
+| Entry invocation | `--until-clean` (scope P0,P1,P2; 100 fix attempts; 200 review calls; 28800s) |
+| Bounded alternative | `--max-iterations N` with optional `--max-review-calls` / `--max-seconds` |
+| Continuation | `--continue` retains limits/usage; `--new-goal` only on explicit request |
+| Clean proof | two complete consecutive empty sweeps at goal scope (empty queue alone not clean) |
 | Review, arbitration, verification | read-only |
 | Fixer scope | one accepted finding |
 | P3/style nit fuel | rejected by default |
@@ -88,7 +103,7 @@ export DESLOP_IDLE_TIMEOUT_SECONDS=0
 export DESLOP_FIX_IDLE_TIMEOUT_SECONDS=7200
 ```
 
-Wall-clock cap: `--agent-timeout-seconds` / `DESLOP_TIMEOUT_SECONDS` (default 5400). `scripts/deslop-doctor.py` prints effective values for your harness.
+Wall-clock cap: `--agent-timeout-seconds` / `DESLOP_TIMEOUT_SECONDS` (default 5400). `scripts/deslop-doctor.py` prints effective values for your harness. Never call `continue` repeatedly to bypass an exhausted cap; report the exact stop reason and resume only via deliberate user decision.
 
 ## Adapter Matrix
 
@@ -107,8 +122,10 @@ Select a harness per run:
 
 ```sh
 DESLOP_HARNESS=opencode "$SKILL_DIR/scripts/deslop-review.sh"
-DESLOP_HARNESS=codex DESLOP_MODEL=gpt-5.3-codex-spark "$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations 3
+DESLOP_HARNESS=codex DESLOP_MODEL=gpt-5.3-codex-spark "$SKILL_DIR/scripts/deslop-loop.sh" --until-clean
 ```
+
+See `references/runtime-adapters.md` for the guarded-adapter rule (no invented CLI guarantees).
 
 ## Installation Options
 
@@ -131,10 +148,10 @@ Installers live under `scripts/install/` and accept `--scope global`, `--scope l
 | Path | Purpose |
 | --- | --- |
 | `.deslop/config.json` | local loop settings |
+| `.deslop/state.json` | durable goal (scope, caps, usage), counters, stop state, loop outcome |
 | `.deslop/inventory.json` | deterministic repository inventory |
 | `.deslop/index.md` | human-readable inventory and command summary |
 | `.deslop/findings.jsonl` | append-friendly finding state |
-| `.deslop/state.json` | counters, stop state, loop outcome, and loop metadata |
 | `scripts/deslop-doctor.py` | harness PATH/auth/model readiness check |
 | `scripts/deslop-resume.py` | resolve `needs_human` / `blocked` findings |
 | `.deslop/runs/` | prompts, raw output, extracted JSON, check logs |
@@ -154,11 +171,11 @@ Runtime artifacts are intentionally gitignored in this repository.
 
 ## Loop Outcome Summary
 
-After a bounded loop exits, `deslop-status.py` prints why it stopped, which findings were verified in that run, what is still queued, and any `needs_human` / `false_positive` reasons. The same summary is persisted as `.deslop/state.json` → `loop_outcome`.
+After a loop exits, `deslop-status.py` prints why it stopped (including `clean` vs. exact incomplete reason), the goal usage (fix attempts / review calls / elapsed seconds), which findings were verified in that run, what is still queued, and any `needs_human` / `false_positive` reasons. The same summary is persisted as `.deslop/state.json` → `loop_outcome`.
 
 ## Deterministic Proof
 
-CI proves the control plane without a live model. A fake Codex CLI drives review → fix → checks → verify → finalize and asserts a clear `no_eligible_findings` stop outcome. See [references/proof-run.md](references/proof-run.md) and the live soak template in [references/soak-runs.md](references/soak-runs.md).
+CI proves the control plane without a live model. A fake Codex CLI drives review → fix → checks → verify → finalize and asserts a clear `no_eligible_findings` stop outcome. See [references/proof-run.md](references/proof-run.md) and the live soak template in [references/soak-runs.md](references/soak-runs.md). Researched designs in [references/research-notes.md](references/research-notes.md) are design inputs only, distinct from these proven guarantees; no design promises arbitrarily weak agents finish or all bugs are found.
 
 ```sh
 python3 -m unittest tests.test_harness.HarnessTests.test_deterministic_proof_run -v

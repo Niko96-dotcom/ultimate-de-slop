@@ -1,42 +1,31 @@
 # Severity Rubric
 
-## P0
+Loop fuel is findings at or above threshold in the goal scope. Default `--until-clean` scope is P0,P1,P2; bounded runs may narrow it (e.g. `--priority P0,P1`).
 
-Correctness, security, data loss, build break, test break, or serious production breakage.
+## P0 — correctness / security / breakage
+
+Data loss or corruption path, bypassable security boundary, broken default build or test command, serious production breakage.
 
 Default confidence threshold: `0.70`.
 
-Examples:
+## P1 — serious structural drag, happening now
 
-- A code path can delete or corrupt user data.
-- A security boundary is bypassable.
-- The default build or test command is broken.
-
-## P1
-
-Serious structural issue already hurting maintainability or correctness velocity.
+Repeated ad-hoc conditionals making a busy flow fragile; mixed ownership forcing cross-layer edits; giant file already blocking safe change; unenforced invariant already causing defects.
 
 Default confidence threshold: `0.75`.
 
-Examples:
+Cost must be concrete and present-tense: name the execution/change path and what it costs today.
 
-- A busy flow contains repeated ad-hoc conditionals that make correctness fragile.
-- Ownership boundaries are mixed so fixes require edits across unrelated layers.
-- A giant file is already blocking safe change.
+## P2 — bounded cleanup with clear payoff and controlled risk
 
-## P2
+Duplicated adapter collapsible behind the existing canonical helper; medium flow simplifiable by a small extraction with tests; dead code removable with caller/contract proof.
 
-Bounded cleanup with clear payoff and low or regression-controlled risk.
+Default confidence threshold: `0.85`. Higher bar because payoff must justify loop fuel.
 
-Default confidence threshold: `0.85`.
+## P3 — never loop fuel
 
-Examples:
+Style, taste, naming, formatting, speculative cleanup, broad rewrite ideas, quota-driven churn ("split everything over N lines"). Rejected by default.
 
-- A duplicated adapter can be collapsed behind an existing canonical helper.
-- A medium-sized flow can be simplified with a small extraction and tests.
+## Confidence and evidence
 
-## P3
-
-Style, preference, naming taste, formatting, speculative cleanup, or broad rewrite ideas.
-
-P3 is rejected by default and must not fuel the loop.
+Confidence is the reviewer's calibrated probability the path, cost, and fix are all correct — not enthusiasm. Below-threshold findings are rejected (or `needs_human` when risk genuinely needs a person, never as a way to smuggle weak findings into the loop).

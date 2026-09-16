@@ -158,7 +158,7 @@ if [ ! -f "$ROOT/.deslop/config.json" ]; then
 fi
 "$SCRIPT_DIR/deslop-inventory.py" --write
 
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+timestamp="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))')"
 run_dir="$ROOT/.deslop/runs/${timestamp}-review"
 mkdir -p "$run_dir"
 prompt="$run_dir/prompt.txt"

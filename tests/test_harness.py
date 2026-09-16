@@ -99,13 +99,14 @@ def prepare_verify_fixture(root: Path, finding_id: str = "DSL-000001") -> Path:
     finding = minimal_finding(finding_id, files=["sample.py"])
     finding["status"] = "fixed_unverified"
     finding["last_fix"] = {
+        "changed_files": ["sample.py"],
         "snapshot_paths": {
             "status_before": str(status_before),
             "diff_before": str(diff_before),
             "status_after": str(status_after),
             "diff_after": str(diff_after),
             "attempt_delta": str(attempt_delta),
-        }
+        },
     }
     write_findings(root, finding)
 
@@ -113,7 +114,22 @@ def prepare_verify_fixture(root: Path, finding_id: str = "DSL-000001") -> Path:
     checks_dir.mkdir()
     checks_path = checks_dir / "checks.json"
     checks_path.write_text(
-        json.dumps({"finding_id": finding_id, "status": "passed", "results": []}) + "\n"
+        json.dumps(
+            {
+                "finding_id": finding_id,
+                "status": "passed",
+                "results": [
+                    {
+                        "command": "python3 -m py_compile sample.py",
+                        "status": "passed",
+                        "exit_code": 0,
+                        "duration_seconds": 0,
+                        "output_path": "check-1.log",
+                    }
+                ],
+            }
+        )
+        + "\n"
     )
     return checks_path
 
@@ -757,8 +773,8 @@ print(json.dumps({{
             self.assertEqual(json.loads(last.read_text().split("```json\n", 1)[1].split("\n```", 1)[0]), payload)
             diagnostics = json.loads(runner_json.read_text())
             self.assertEqual(diagnostics["model"], "claude-haiku-4-5")
-            self.assertEqual(diagnostics["permission_mode"], "default")
-            self.assertNotIn("plan", diagnostics["command"])
+            self.assertEqual(diagnostics["permission_mode"], "plan")
+            self.assertIn("plan", diagnostics["command"])
 
     def test_agent_runner_enables_write_permissions_for_headless_fixers(self) -> None:
         tempdir, root = self.make_repo()
@@ -1406,6 +1422,7 @@ print(json.dumps({"argv": sys.argv[1:]}))
             scripts_dir.mkdir(parents=True)
             shutil.copy(SCRIPT_DIR / "deslop_harness.py", scripts_dir / "deslop_harness.py")
             shutil.copy(SCRIPT_DIR / "deslop_oauth.py", scripts_dir / "deslop_oauth.py")
+            shutil.copy(SCRIPT_DIR / "deslop_snapshot.py", scripts_dir / "deslop_snapshot.py")
             shutil.copy(SCRIPT_DIR / "deslop-agent-runner.py", scripts_dir / "deslop-agent-runner.py")
             marker = {"harness": "cursor"}
             (skill_root / ".ultimate-de-slop-install.json").write_text(json.dumps(marker) + "\n")
@@ -1678,13 +1695,14 @@ print(text)
             finding = minimal_finding("DSL-000001", files=["sample.py"])
             finding["status"] = "fixed_unverified"
             finding["last_fix"] = {
+                "changed_files": ["sample.py"],
                 "snapshot_paths": {
                     "status_before": str(status_before),
                     "diff_before": str(diff_before),
                     "status_after": str(status_after),
                     "diff_after": str(diff_after),
                     "attempt_delta": str(attempt_delta),
-                }
+                },
             }
             write_findings(root, finding)
 
@@ -1692,7 +1710,22 @@ print(text)
             checks_dir.mkdir()
             checks_path = checks_dir / "checks.json"
             checks_path.write_text(
-                json.dumps({"finding_id": "DSL-000001", "status": "passed", "results": []}) + "\n"
+                json.dumps(
+                    {
+                        "finding_id": "DSL-000001",
+                        "status": "passed",
+                        "results": [
+                            {
+                                "command": "python3 -m py_compile sample.py",
+                                "status": "passed",
+                                "exit_code": 0,
+                                "duration_seconds": 0,
+                                "output_path": "check-1.log",
+                            }
+                        ],
+                    }
+                )
+                + "\n"
             )
 
             fake_bin = root / "fake-bin"
@@ -1705,7 +1738,7 @@ import sys
 from pathlib import Path
 
 payload = {
-    "finding_id": "DSL-0000001",
+    "finding_id": "DSL-000001",
     "verdict": "PASS",
     "confidence": "high",
     "evidence": "checked attempt delta",

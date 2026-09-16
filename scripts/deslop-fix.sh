@@ -42,13 +42,14 @@ if [ -z "$FINDING_ID" ]; then
 fi
 
 extract_json() {
-  python3 - "$1" "$2" <<'PY'
+  python3 - "$1" "$2" "$3" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 source = Path(sys.argv[1])
 target = Path(sys.argv[2])
+expected_finding_id = sys.argv[3]
 text = source.read_text(errors="ignore")
 
 def scan_balanced(s):
@@ -93,7 +94,7 @@ for candidate in scan_balanced(text):
     if isinstance(parsed, dict):
         valid.append(parsed)
 
-required = {"finding_id", "summary", "changed_files", "checks_run", "risks", "status"}
+required = {"summary", "changed_files", "checks_run", "risks", "status"}
 obj = next((item for item in reversed(valid) if required.issubset(item)), None)
 if obj is None:
     if valid:
@@ -105,6 +106,14 @@ if obj is None:
     else:
         print(f"could not extract JSON object from {source}", file=sys.stderr)
     raise SystemExit(1)
+reported = obj.get("finding_id")
+if reported is None or (isinstance(reported, str) and not reported.strip()):
+    obj["finding_id"] = expected_finding_id
+elif str(reported).strip() != expected_finding_id:
+    print(f"fix finding_id mismatch: expected {expected_finding_id}, got {reported!r}", file=sys.stderr)
+    raise SystemExit(1)
+else:
+    obj["finding_id"] = expected_finding_id
 target.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
 PY
 }
@@ -129,9 +138,49 @@ fi
 
 python3 "$SCRIPT_DIR/deslop_finding_id.py" validate "$FINDING_ID" --prefix deslop-fix || exit 1
 
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+timestamp="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))')"
 run_dir="$(python3 "$SCRIPT_DIR/deslop_finding_id.py" run-dir "$ROOT" fix "$FINDING_ID" "$timestamp")" || exit 1
 mkdir -p "$run_dir"
+
+python3 - "$ROOT" "$run_dir/manifest-before.json" "$SCRIPT_DIR" <<'PY_SNAPSHOT'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[3])
+from deslop_snapshot import snapshot
+Path(sys.argv[2]).write_text(json.dumps(snapshot(Path(sys.argv[1])), sort_keys=True))
+PY_SNAPSHOT
+
+revert_fixing_on_exit() {
+  python3 - "$ROOT" "$FINDING_ID" "$SCRIPT_DIR" "$run_dir/manifest-before.json" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[3])
+from deslop_loop_support import write_findings_jsonl
+
+root = Path(sys.argv[1])
+finding_id = sys.argv[2]
+path = root / ".deslop" / "findings.jsonl"
+if not path.exists():
+    raise SystemExit(0)
+items = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+target = next((item for item in items if item.get("id") == finding_id), None)
+if target is None or target.get("status") != "fixing":
+    raise SystemExit(0)
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+from deslop_snapshot import snapshot
+before = json.loads(Path(sys.argv[4]).read_text())
+changed = snapshot(root) != before
+target["status"] = "needs_human" if changed else "accepted"
+target["updated_at"] = now
+target["interrupted_fix"] = {"at": now, "reason": "fix script exited before completing fix contract"}
+write_findings_jsonl(root, items)
+print(f"Finding {finding_id}: {target['status']} (fix interrupted)", file=sys.stderr)
+PY
+}
+trap revert_fixing_on_exit EXIT
 
 python3 - "$ROOT" "$FINDING_ID" "$run_dir/finding.json" "$SCRIPT_DIR" <<'PY'
 import json
@@ -165,34 +214,7 @@ snapshot.write_text(json.dumps(target, indent=2, sort_keys=True) + "\n")
 write_findings_jsonl(root, items)
 PY
 
-revert_fixing_on_exit() {
-  python3 - "$ROOT" "$FINDING_ID" "$SCRIPT_DIR" <<'PY'
-import json
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
 
-sys.path.insert(0, sys.argv[3])
-from deslop_loop_support import write_findings_jsonl
-
-root = Path(sys.argv[1])
-finding_id = sys.argv[2]
-path = root / ".deslop" / "findings.jsonl"
-if not path.exists():
-    raise SystemExit(0)
-items = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-target = next((item for item in items if item.get("id") == finding_id), None)
-if target is None or target.get("status") != "fixing":
-    raise SystemExit(0)
-now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-target["status"] = "accepted"
-target["updated_at"] = now
-target["interrupted_fix"] = {"at": now, "reason": "fix script exited before completing fix contract"}
-write_findings_jsonl(root, items)
-print(f"Finding {finding_id}: reverted to accepted (fix interrupted)", file=sys.stderr)
-PY
-}
-trap revert_fixing_on_exit EXIT
 
 prompt="$run_dir/prompt.txt"
 raw="$run_dir/raw-fix-output.txt"
@@ -235,7 +257,7 @@ PY
 cat > "$prompt" <<EOF
 You are running as the selected Ultimate De-Slop fixer role. Do not delegate to another fixer, load skill files recursively, or run deslop-loop.sh, deslop-fix.sh, or any nested de-slop harness command from inside this fixer session.
 
-Fix exactly one finding. Do not fix unrelated issues. Do not clean up while you are here. Preserve behavior unless explicitly required. Prefer deleting/moving complexity to adding abstraction. Add or update a focused test when acceptance criteria or expected checks imply behavioral coverage (unittest/pytest/assert/test). Run the expected checks when practical.
+Fix exactly one finding. Do not fix unrelated issues. Do not clean up while you are here. Preserve behavior unless explicitly required. Prefer deleting or simplifying complexity to adding abstraction. Use existing targeted coverage when it proves the criteria; add a regression test when needed. Never weaken tests. Run the expected checks when practical.
 Perform the edit in the working tree before reporting success. Do not merely describe the fix. Before returning, inspect git status or git diff and make sure the files you list in changed_files actually changed.
 Hard budgets from \`.deslop/config.json\` are enforced after your edit: stay within max_changed_files_per_fix and max_changed_lines_per_fix for this attempt delta.
 
@@ -359,7 +381,9 @@ state["last_run"] = {
     "reason": reason,
     "status": target.get("status"),
 }
-state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+temporary_state = state_path.with_suffix(".json.tmp")
+temporary_state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+temporary_state.replace(state_path)
 print(f"Finding {finding_id}: {target.get('status')} ({reason})")
 PY
 }
@@ -380,7 +404,7 @@ if [ "$code" -ne 0 ]; then
   exit "$code"
 fi
 
-if ! extract_json "$last_message" "$fix_json" && ! extract_json "$raw" "$fix_json"; then
+if ! extract_json "$last_message" "$fix_json" "$FINDING_ID" && ! extract_json "$raw" "$fix_json" "$FINDING_ID"; then
   mark_fix_failure "fix JSON extraction failed" 1
   printf 'deslop-fix: error: JSON extraction failed. Raw output: %s\n' "$raw" >&2
   exit 1
@@ -414,6 +438,19 @@ target = next((item for item in items if item.get("id") == finding_id), None)
 if target is None:
     print(f"finding not found: {finding_id}", file=sys.stderr)
     raise SystemExit(1)
+reported_fix_id = fix.get("finding_id")
+if reported_fix_id is None or (isinstance(reported_fix_id, str) and not reported_fix_id.strip()):
+    fix["finding_id"] = finding_id
+elif str(reported_fix_id).strip() != finding_id:
+    print(f"fix finding_id mismatch: expected {finding_id}, got {reported_fix_id!r}", file=sys.stderr)
+    target["status"] = "blocked"
+    target["block_reason"] = f"fix finding_id mismatch: expected {finding_id}, got {reported_fix_id!r}"
+    target["last_fix"] = fix
+    target["updated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    write_findings_jsonl(root, items)
+    raise SystemExit(1)
+else:
+    fix["finding_id"] = finding_id
 changed_files = fix.get("changed_files") or []
 if not isinstance(changed_files, list):
     changed_files = []
@@ -458,7 +495,25 @@ def count_attempt_delta(delta_path: Path) -> tuple[int, int]:
                 lines += 1
     return len(files), lines
 
-attempt_files, attempt_lines = count_attempt_delta(attempt_delta)
+from deslop_snapshot import snapshot
+before_manifest = json.loads((run_dir / "manifest-before.json").read_text())
+after_manifest = snapshot(root)
+actual_changed = sorted(p for p in before_manifest.keys() | after_manifest.keys()
+                        if before_manifest.get(p) != after_manifest.get(p))
+changed_during_attempt = bool(actual_changed)
+claimed_files = sorted(set(str(p) for p in changed_files))
+fix["reported_changed_files"] = claimed_files
+fix["changed_files"] = actual_changed
+changed_files = actual_changed
+_, attempt_lines = count_attempt_delta(attempt_delta)
+attempt_files = len(actual_changed)
+tracked_paths = set(subprocess.check_output(["git", "ls-files", "-z", "--cached"], cwd=root).decode().split("\0"))
+# Git diff omits untracked files; include their full content in the budget.
+for name in actual_changed:
+    path = root / name
+    if name not in tracked_paths and path.is_file() and not path.is_symlink():
+        attempt_lines += len(path.read_bytes().splitlines())
+
 fix["attempt_changed_files"] = attempt_files
 fix["attempt_changed_lines"] = attempt_lines
 budget_breach = None
@@ -470,6 +525,9 @@ if changed_during_attempt and (attempt_files > max_files or attempt_lines > max_
 
 if status_text in {"blocked", "cannot_fix", "failed"}:
     target["status"] = "blocked"
+elif claimed_files != actual_changed:
+    target["status"] = "needs_human"
+    target["block_reason"] = "reported changed_files does not match actual content changes"
 elif budget_breach:
     target["status"] = "needs_human"
     target["block_reason"] = budget_breach
@@ -519,7 +577,9 @@ state["counters"] = {
 }
 state["open_findings_summary"] = state["counters"]["open_by_severity"]
 state["last_run"] = {"kind": "fix", "finding_id": finding_id, "at": now, "status": target["status"]}
-state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+temporary_state = state_path.with_suffix(".json.tmp")
+temporary_state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+temporary_state.replace(state_path)
 if budget_breach:
     print(f"Finding {finding_id}: needs_human ({budget_breach})", file=sys.stderr)
     raise SystemExit(1)

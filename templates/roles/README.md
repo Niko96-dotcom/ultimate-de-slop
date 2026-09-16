@@ -6,7 +6,7 @@ state transitions, snapshots, and checks. Adapters should only select the right 
 and run the prompt.
 
 - `deslop_reviewer`: read-only whole-codebase structural review.
-- `deslop_arbiter`: read-only dedupe, thresholding, rejection, prioritization, and stop advice.
+- `deslop_arbiter`: optional read-only guidance; `deslop-arbitrate.py` performs actual dedupe, thresholding, rejection, and prioritization.
 - `deslop_fixer`: workspace-write repair for exactly one accepted finding.
 - `deslop_verifier`: read-only independent verification of one fix.
-- `deslop_scribe`: `.deslop` summaries and state only; never product files.
+- `deslop_scribe`: optional summary role; the loop persists state deterministically, without requiring a scribe.

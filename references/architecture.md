@@ -1,37 +1,28 @@
 # Architecture
 
-`ultimate-de-slop` is an outer deterministic harness wrapped around bounded child-agent calls.
+`ultimate-de-slop` is a deterministic outer harness around narrow, fresh-context child-agent calls.
 
-The deterministic layer owns repo-root discovery, inventory, state files, findings, IDs, score calculation, check execution, child-agent execution, JSON extraction, and loop stop conditions. This keeps the workflow auditable and restartable even when agent output is imperfect.
+## Deterministic layer owns
 
-The agent layer is intentionally narrow:
+Repo-root discovery, inventory, state files (`.deslop/config.json`, `.deslop/state.json`, `.deslop/findings.jsonl`, `.deslop/inventory.json`, `.deslop/index.md`), finding IDs, scoring, check execution, child-agent execution, JSON extraction, snapshots, and stop conditions. The durable `--until-clean` goal (scope, fix-attempt / review-call / seconds caps, usage) lives in `.deslop/state.json`; no host goal API is required. `--continue` retains limits and usage; `--new-goal` renews them only on explicit user request.
 
-- Reviewer: read-only whole-codebase structural review.
-- Arbiter: read-only dedupe, thresholding, rejection, prioritization, and stop-policy advice.
-- Fixer: workspace-write, one accepted finding only.
-- Verifier: read-only independent judgment of the patch against the original finding and checks.
-- Scribe: `.deslop` state and summary maintenance only.
+## Agent layer is intentionally narrow
 
-The loop flow is:
+- Reviewer: read-only whole-codebase structural review, by inventory partitions.
+- Arbitration: `deslop-arbitrate.py` deterministically deduplicates, thresholds, rejects, and prioritizes findings. Optional arbiter role templates are guidance, not a required model call.
+- Fixer: workspace-write, exactly one accepted finding ID, smallest behavior-preserving patch.
+- Verifier: read-only independent judgment of one patch against its finding and checks.
+- State and summaries: deterministic scripts; the optional scribe role is not required.
 
-1. Initialize `.deslop`.
-2. Inventory the repo.
-3. Check for queued accepted findings.
-4. If an accepted finding exists, fix it before starting another review.
-5. If no accepted finding exists, review by partitions in read-only mode.
-6. Arbitrate and persist accepted findings.
-7. Fix exactly one accepted finding.
-8. Run deterministic checks.
-9. Verify independently in read-only mode.
-10. Finalize state and optionally commit.
-11. Repeat only until an explicit stop policy triggers.
+Each child call is a fresh invocation with a bounded prompt; memory between calls is disk state (git history, `.deslop/` artifacts, per-finding snapshots) plus the inventory map — never chat history. This is the researched fresh-context loop pattern (see `research-notes.md`): it lets even weak agents make progress because each step is small, re-derivable, and validated before the next begins. Reviewer, fixer, and verifier contexts are always separate; a role never judges its own output.
 
-The harness should optimize for high-confidence structural improvements. It should not become a style churn machine or a rewrite launcher.
+## Loop flow
 
-Child calls go through `scripts/deslop-agent-runner.py`; `scripts/deslop-codex-runner.py` is a compatibility shim. The runner provides the execution contract the shell scripts depend on: prompt via stdin, explicit working root, harness selection through `DESLOP_HARNESS`, final-message capture or equivalent, raw output capture, wall-clock timeout, idle timeout, and a machine-readable `runner.json`. Codex uses native schema and last-message flags. Other adapters provide best-effort JSON mode and rely on the deterministic extraction fallback. Runner output schemas must stay compatible with strict structured-output validation: object schemas close over `additionalProperties: false`, and every declared property is listed in `required`.
+1. Initialize `.deslop`. 2. Inventory the repo. 3. Serve any queued accepted finding before opening a new review wave. 4. Review by partitions (read-only). 5. Arbitrate and persist. 6. Fix exactly one finding. 7. Run deterministic checks. 8. Verify independently (read-only). 9. Finalize state, optionally commit. 10. Repeat only until the stop policy proves `clean` (two complete consecutive empty sweeps at goal scope) or a hard stop fires.
 
-Adapters must stay thin. They construct a CLI command from root/cwd, prompt file, raw output path, last message path, runner JSON path, schema path, sandbox/permission mode, kind/role, optional model, and optional extra directories. They must not own finding lifecycle, JSON extraction, timeout policy, state transitions, snapshots, or checks.
+## Execution and safety
 
-Fix attempts record git status and diff snapshots before and after the fixer runs. The verifier receives both the full current diff and a per-finding patch-of-patches, so a no-commit loop can continue across earlier verified uncommitted fixes without making the verifier judge unrelated accumulated changes as part of the current finding.
-
-If a fixer fails or times out after changing the worktree, the finding is marked `needs_human`; stale dirty state is not counted as a successful fix.
+- Child calls go through `scripts/deslop-agent-runner.py` (plus the Codex compatibility shim). The runner owns capture, timeouts, and missing-CLI reporting; adapters stay thin (command construction only) and never own lifecycle, extraction, or state.
+- Fix attempts snapshot git status/diff before and after; the verifier judges the per-finding snapshot first, full diff second. Fixer failure/timeout with a dirty tree marks `needs_human`; stale dirt is never a successful fix.
+- Budgets and circuit behavior: fix-attempt, review-call, and seconds caps plus the two-sweep clean proof act as the loop's circuit breaker (see `research-notes.md`). They halt runaway, stuck, or externally-failing loops; recovery is deliberate (`--continue` within caps, human review, or explicit `--new-goal`), never automatic cap evasion.
+- Optimizer: high-confidence structural improvement. Never a style-churn machine or rewrite launcher. No guarantee covers arbitrarily weak agents or all bugs.

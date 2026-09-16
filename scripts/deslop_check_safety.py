@@ -73,6 +73,9 @@ def strip_env(tokens: list[str]) -> list[str]:
     return rest
 
 
+MAKE_SAFE_TARGETS = frozenset({"test", "lint", "check", "typecheck"})
+
+
 def is_safe_check_command(command_text: str) -> bool:
     value = command_text.strip()
     if not value or has_unsafe_shell_syntax(value):
@@ -86,6 +89,11 @@ def is_safe_check_command(command_text: str) -> bool:
         return len(tokens) == 3 and bool(tokens[2].strip())
     if tokens[:2] in (["npm", "--prefix"], ["pnpm", "--dir"]):
         return len(tokens) == 5 and tokens[3] == "run" and bool(tokens[2].strip()) and bool(tokens[4].strip())
+    # Narrow make support: only exact `make <test|lint|check|typecheck>`
+    # discovered from the repo Makefile. Arbitrary goals (build, deploy,
+    # clean, custom targets) stay blocked even if they appear in inventory.
+    if tokens[:1] == ["make"]:
+        return len(tokens) == 2 and tokens[1] in MAKE_SAFE_TARGETS
     for prefix in SAFE_PREFIXES:
         if tuple(tokens[: len(prefix)]) == prefix:
             return True
