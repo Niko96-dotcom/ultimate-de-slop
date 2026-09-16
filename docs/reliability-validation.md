@@ -37,3 +37,32 @@ pipeline using deterministic native responses, unchanged-goal resume, stale
 response rejection, duplicate launch prevention, stop cancellation, read-only
 mutation rejection, and exclusion of nested CLI configuration from installs.
 These are harness integration tests, not evidence of a live Cursor Cloud run.
+
+### Live Cursor Cloud smoke test
+
+In the Cursor task `De-slop native cloud test`, the cloud VM executed package
+revision `939a1f18ab259e9875d62022b0e190ac0d415ca2` against the disposable Git fixture
+`/tmp/deslop-native-cloud-smoke.CzpyUM`. Three actual native Cursor Grok 4.6 subagents
+ran: fixer, independent verifier, and reviewer. The fixer corrected `identity(x)`
+from `x + 1` to `x`; the recorded test passed and the verifier returned PASS at
+0.96 confidence. The deterministic controller recorded `DSL-000001` as verified.
+A separate terminal run confirmed `test_identity ... ok`, `Ran 1 test`, `OK`.
+
+The smoke test's explicit 600-second cap expired during the subsequent review:
+state recorded `stage_failed` / `review_failed`, elapsed 600.11474345 seconds,
+one verified finding and zero completed empty sweeps. This is **not** a live
+until-clean proof. All native workers completed and the parent test task was
+stopped; no claim of a fully clean repository is made. Deterministic integration
+tests cover complete empty-sweep convergence. GitHub CI subsequently passed all
+138 tests on the hardened handoff implementation.
+
+Live use exposed a brief reappearance of submitted requests before consumption.
+The published implementation now hides submitted requests from dispatch polling,
+with regression coverage, while still rejecting duplicate submissions.
+
+Cursor's User Context copy remained stale despite enabled skill sync. It was
+replaced through Cursor's editor with `templates/cursor/cloud/SKILL.md`; its new
+cloud-entry content and description were visibly verified after saving. Scoped
+User Context preferences now route explicit Project de-slop requests to that
+entry, with a published-package fallback when Context files are unavailable.
+Local and old-Mac CLI packages retain the full standalone runtime.
