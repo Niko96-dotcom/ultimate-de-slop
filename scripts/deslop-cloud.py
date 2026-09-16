@@ -93,13 +93,15 @@ def request(args):
         atomic(path, payload)
 
 
-def pending(repo):
+def pending(repo, *, include_submitted=False):
     items = []
     for path in sorted((repo / '.deslop/runs').glob('*/native-request.json')):
         item = json.loads(path.read_text())
         if item.get('status') == 'pending' and alive(item.get('pid')) and time.time() < item['expires_at']:
             # Never accept a response destination supplied by mutable request JSON.
             item['response'] = str(path.parent / 'native-response.json')
+            if Path(item['response']).exists() and not include_submitted:
+                continue
             if item.get('root') != str(repo.resolve()):
                 raise ValueError('Native request belongs to another checkout')
             items.append(item)
@@ -107,7 +109,7 @@ def pending(repo):
 
 
 def submit(repo, ident, result_file):
-    items = [item for item in pending(repo) if item['id'] == ident]
+    items = [item for item in pending(repo, include_submitted=True) if item['id'] == ident]
     if len(items) != 1:
         raise ValueError('No live pending request with that ID; do not replay stale results')
     item = items[0]

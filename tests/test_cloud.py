@@ -157,5 +157,6 @@ class CloudTests(unittest.TestCase):
             result.write_text('{}');cloud.submit(repo,'live',result)
             self.assertFalse((repo/'outside.json').exists())
             self.assertTrue((folder/'native-response.json').exists())
+            self.assertEqual(cloud.pending(repo), [])
             with self.assertRaisesRegex(ValueError,'already submitted'):
                 cloud.submit(repo,'live',result)
