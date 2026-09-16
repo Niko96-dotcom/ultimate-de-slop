@@ -20,10 +20,16 @@ import uuid
 SCRIPT = Path(__file__).resolve()
 
 
-def atomic(path, value):
+def atomic(path, value, *, exclusive=False):
     temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temp.write_text(json.dumps(value, indent=2) + '\n')
-    temp.replace(path)
+    if exclusive:
+        try:
+            os.link(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+    else:
+        temp.replace(path)
 
 
 def alive(pid):
@@ -92,6 +98,10 @@ def pending(repo):
     for path in sorted((repo / '.deslop/runs').glob('*/native-request.json')):
         item = json.loads(path.read_text())
         if item.get('status') == 'pending' and alive(item.get('pid')) and time.time() < item['expires_at']:
+            # Never accept a response destination supplied by mutable request JSON.
+            item['response'] = str(path.parent / 'native-response.json')
+            if item.get('root') != str(repo.resolve()):
+                raise ValueError('Native request belongs to another checkout')
             items.append(item)
     return items
 
@@ -107,7 +117,7 @@ def submit(repo, ident, result_file):
     result = json.loads(result_file.read_text())
     if not isinstance(result, dict):
         raise ValueError('Subagent result must be a JSON object')
-    atomic(response, {'id': ident, 'result': result})
+    atomic(response, {'id': ident, 'result': result}, exclusive=True)
     return {'submitted': ident}
 
 

@@ -143,3 +143,19 @@ class CloudTests(unittest.TestCase):
             target=base/'target';installer.copy_tree(source,target)
             self.assertTrue((target/'SKILL.md').exists())
             self.assertFalse((target/'.opencode').exists())
+
+    def test_submission_rejects_nonobject_duplicate_and_external_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo=Path(tmp);self.fixture(repo)
+            folder=repo/'.deslop/runs/request';folder.mkdir()
+            request=dict(id='live',pid=os.getpid(),status='pending',root=str(repo.resolve()),
+                         expires_at=time.time()+30,response=str(repo/'outside.json'))
+            (folder/'native-request.json').write_text(json.dumps(request))
+            result=repo/'.deslop/result.json';result.write_text('[]')
+            with self.assertRaisesRegex(ValueError,'JSON object'):
+                cloud.submit(repo,'live',result)
+            result.write_text('{}');cloud.submit(repo,'live',result)
+            self.assertFalse((repo/'outside.json').exists())
+            self.assertTrue((folder/'native-response.json').exists())
+            with self.assertRaisesRegex(ValueError,'already submitted'):
+                cloud.submit(repo,'live',result)

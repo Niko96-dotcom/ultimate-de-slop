@@ -31,7 +31,8 @@ proof binding, finalization, goal budgets and empty-sweep coverage are unchanged
 must service requests and cancel its native workers if a request is cancelled.
 
 Validation: `make ci` passed 137 tests. After adding review-only controller locking,
-all five cloud tests passed again. The tests cover a real fix/check/verify/clean
+all six cloud tests passed again, including duplicate/nonobject responses and
+response destination confinement. The tests cover a real fix/check/verify/clean
 pipeline using deterministic native responses, unchanged-goal resume, stale
 response rejection, duplicate launch prevention, stop cancellation, read-only
 mutation rejection, and exclusion of nested CLI configuration from installs.

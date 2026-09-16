@@ -57,7 +57,13 @@ Do not treat a missing catalog entry as an absent skill.
    product code. All roles must leave `.deslop` control files untouched, must not
    delegate again, and must not recursively invoke this skill. Use the current
    host's configured model unless the user specifies one.
-5. Wait for that subagent to finish. The parent writes its exact returned JSON
+5. Prefer a background native subagent with bounded waits so the parent can poll
+   the controller during its work. If the request expires or the controller stops,
+   cancel that worker using the host tool and wait for termination; do not submit
+   its late answer or start another writer. If only foreground dispatch is exposed,
+   use a host timeout no greater than the request's remaining `expires_at` time
+   where supported and report any inability to cancel promptly. Wait for the
+   subagent to finish. The parent writes its exact returned JSON
    object to `TARGET/.deslop/tmp/native-<request-id>.json` using a file-write tool
    or a literal quoted heredoc. Do not interpolate model text into shell code, and
    do not invent, improve or replace its verdict. Submit it:
