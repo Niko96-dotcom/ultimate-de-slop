@@ -17,6 +17,13 @@ Standard commands live in the `Makefile` and `README.md`; use them directly:
 - `make test` — `python3 -m unittest discover -s tests -v`.
 There is no build step and no application server to start.
 
+### Native cloud execution
+- Cloud Agents / Projects should follow `references/cursor-cloud.md`. The native
+  handoff adapter uses the host's subagent tools without an external agent CLI.
+- `python3 scripts/deslop-cloud.py start -- --until-clean` returns immediately;
+  the host must poll requests, dispatch one native role subagent at a time, and
+  submit its JSON. Startup alone does not execute an AI review or prove readiness.
+
 ### Non-obvious caveats
 - The harness stages `deslop-review.sh`, `deslop-fix.sh`, and `deslop-verify.sh` invoke
   an **external agent CLI** (selected via `DESLOP_HARNESS`, default `codex`; also

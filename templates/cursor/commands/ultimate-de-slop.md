@@ -17,7 +17,13 @@ Arguments: $ARGUMENTS
 2. `$HOME/.cursor/skills/ultimate-de-slop`
 3. `$HOME/.agents/skills/ultimate-de-slop`
 
-## Run
+## Cloud / Projects
+
+In Cursor Projects or Cloud Agents, read `$SKILL_DIR/SKILL.md` and follow
+`$SKILL_DIR/references/cursor-cloud.md` instead of the local commands below.
+The native controller does not need `cursor-agent` or a separate login.
+
+## Run (local CLI)
 
 If `--review-only` is present (review, audit, findings-only, no edits, read-only):
 

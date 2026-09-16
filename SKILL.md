@@ -17,7 +17,18 @@ Default intent: bare invocation ("de-slop", "Ultimate De Slop", repo-wide cleanu
 2. Let `TARGET` be the repository the user wants improved. Run every harness command with cwd=`TARGET`, invoking the skill scripts as `"$SKILL_DIR/scripts/<name>"`. Never require `TARGET` to contain skill scripts.
 3. Select harness via `DESLOP_HARNESS` or the installation marker (fallback `codex`; also `claude`, `opencode`, `cursor`, `pi`, `commandcode`, `hermes`; `openclaw` is honestly guarded, see `references/runtime-adapters.md`). Use the harness session/OAuth model; set `DESLOP_MODEL` only on explicit user override.
 
-## Procedure (the one procedure; follow in order)
+## Cursor Projects / Cloud Agents (select before running commands)
+
+In Cursor Projects or Cloud Agents, use [the native cloud procedure](references/cursor-cloud.md)
+instead of the CLI procedure below. It runs the same deterministic loop using the
+host's native subagents and requires no nested CLI or additional login. Project
+coordinators delegate it to one repository execution agent. This route takes
+precedence over a synced installation marker that says `cursor` or `codex`.
+Also use it when native subagents are available but the selected CLI is unavailable.
+Do not start a blocking CLI loop and then try to service native requests from that
+same blocked turn; the cloud launcher returns immediately so you can dispatch them.
+
+## CLI procedure (local or explicitly configured CLI execution)
 
 1. Prepare state: with cwd=`TARGET`, run `"$SKILL_DIR/scripts/deslop-init.sh"`. Run `"$SKILL_DIR/scripts/deslop-doctor.py"` when harness/auth readiness is uncertain. Partitions come from `.deslop/index.md` and `.deslop/inventory.json`.
 2. If the user asked review-only, run `"$SKILL_DIR/scripts/deslop-review.sh"` (optionally `--partition <name>`), then report findings and stop. Do not fix, do not continue.

@@ -210,3 +210,16 @@ bash -n scripts/*.sh scripts/install/*.sh
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Cursor Projects and Cloud Agents
+
+Ultimate De-Slop supports native host subagents through a file handoff adapter.
+Cloud runs keep the existing deterministic loop, budgets and verification gates;
+they do not require a nested `cursor-agent` CLI or a second login. The cloud host
+agent services requests using its own subagent tools. See the
+[cloud procedure](references/cursor-cloud.md) for startup, resume and installation.
+
+The installed skill detects cloud intent in its instructions before selecting the
+CLI procedure. Sync the complete Cursor skill folder, or install it into the target
+repository. A Project coordinator delegates the run to one repository execution
+agent; role subagents share that execution agent's checkout.

@@ -20,3 +20,19 @@ See [research notes](../references/research-notes.md) for primary-source compari
 ## Limits of the evidence
 
 The tests use scripted agent CLIs. They prove control-plane behavior, not universal model judgment or production compatibility with every CLI version. Two empty sweeps mean no eligible findings were accepted in the reviewed scope; they do not prove that no defects exist. Ignored/generated/vendor content remains outside the default source scope. CLI permissions and content checks are not an operating-system sandbox. OpenClaw remains explicitly unsupported until its invocation contract is verified.
+
+## Native Cursor cloud handoff (2026-09-16)
+
+Added a `native` adapter that publishes per-stage requests and receives the parent
+agent's native-subagent JSON through an atomic file handoff. The original runner
+continues to enforce source/control-file ownership; stage validators, checks,
+proof binding, finalization, goal budgets and empty-sweep coverage are unchanged.
+`deslop-cloud.py` provides start, bounded poll, submit and stop commands. The host
+must service requests and cancel its native workers if a request is cancelled.
+
+Validation: `make ci` passed 137 tests. After adding review-only controller locking,
+all five cloud tests passed again. The tests cover a real fix/check/verify/clean
+pipeline using deterministic native responses, unchanged-goal resume, stale
+response rejection, duplicate launch prevention, stop cancellation, read-only
+mutation rejection, and exclusion of nested CLI configuration from installs.
+These are harness integration tests, not evidence of a live Cursor Cloud run.

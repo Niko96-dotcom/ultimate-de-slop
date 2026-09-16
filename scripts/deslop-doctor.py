@@ -18,6 +18,7 @@ from deslop_oauth import auth_status, resolve_model
 
 
 HARNESS_CLI = {
+    "native": sys.executable,
     "claude": "claude",
     "codex": "codex",
     "commandcode": "commandcode",
@@ -95,6 +96,10 @@ def build_report(harness: str | None = None) -> dict[str, Any]:
             )
         )
 
+    if harness_name == "native":
+        checks.append(check_item(False, "native_host_tools",
+            "Parent must dispatch native subagents in the same checkout; shell cannot verify host tool availability.",
+            level="warning"))
     auth = auth_status(harness_name, cli)
     if auth["mode"] != "none":
         checks.append(
@@ -190,6 +195,9 @@ def build_report(harness: str | None = None) -> dict[str, Any]:
 
 
 def suggested(ready: bool, harness: str, cli: str) -> list[str]:
+    if harness == "native":
+        return ["Read references/cursor-cloud.md and verify host subagent tools",
+                "python3 scripts/deslop-cloud.py poll --wait 20"]
     if not ready:
         return [
             "Fix the error checks above, then re-run scripts/deslop-doctor.py",

@@ -74,7 +74,9 @@ LAYOUTS = {
     },
 }
 
-SKIP_DIRS = {".git", ".deslop", "__pycache__"}
+SKIP_DIRS = {".git", ".deslop", "__pycache__", ".cursor", ".codex", ".agents",
+             ".claude", ".opencode", ".pi", ".hermes", ".openclaw", ".commandcode",
+             ".venv", "node_modules"}
 SKIP_NAMES = {".DS_Store"}
 MARKER = ".ultimate-de-slop-install.json"
 

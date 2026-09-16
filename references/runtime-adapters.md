@@ -8,6 +8,7 @@ Set `DESLOP_HARNESS=<harness>` per run. When unset, the harness is read from `.u
 
 | Harness | Status | Invocation style |
 | --- | --- | --- |
+| Native host | supported handoff adapter | `deslop-cloud.py`; parent dispatches native subagents; no provider CLI |
 | Codex | supported default | `codex exec` with schema and last-message capture |
 | Claude | supported adapter | `claude -p` with JSON/schema flags where available; plan mode with Read/Glob/Grep tools for read-only roles |
 | OpenCode | supported adapter | `opencode run --format json --file <prompt>` |

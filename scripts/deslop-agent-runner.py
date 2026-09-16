@@ -29,6 +29,7 @@ from deslop_oauth import resolve_model
 
 
 SUPPORTED_HARNESSES = {
+    "native",
     "claude",
     "codex",
     "commandcode",
@@ -297,7 +298,17 @@ def openclaw_adapter(args: argparse.Namespace, model: str | None) -> AdapterComm
     )
 
 
+def native_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand:
+    command = [sys.executable, str(skill_root() / "scripts/deslop-cloud.py"), "request",
+               "--prompt", str(args.prompt), "--schema", str(args.schema), "--kind", args.kind,
+               "--timeout", str(args.timeout_seconds or 5400)]
+    if is_read_only(args.sandbox, args.kind):
+        command.append("--readonly")
+    return AdapterCommand("native", sys.executable, command, permission_mode="host-native-subagent")
+
+
 ADAPTERS = {
+    "native": native_adapter,
     "claude": claude_adapter,
     "codex": codex_adapter,
     "commandcode": commandcode_adapter,
