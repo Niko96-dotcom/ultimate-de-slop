@@ -45,10 +45,10 @@ Otherwise run the loop. Default to `--until-clean` (scope P0,P1,P2; 100 total fi
 Bounded alternative (only on explicit user bound):
 
 ```sh
-"$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations 5 [--max-review-calls M] [--max-seconds S] [--priority P0,P1,P2]
+"$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations 5 [--priority P0,P1,P2]
 ```
 
-Forward explicit harness flags from `$ARGUMENTS`.
+`--max-review-calls` and `--max-seconds` require `--until-clean`. Forward explicit harness flags from `$ARGUMENTS`.
 
 Do not set `DESLOP_MODEL` unless the user asked to override the OAuth/session model. Child agents should use the model already selected in Codex.
 

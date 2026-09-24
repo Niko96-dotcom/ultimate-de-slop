@@ -1,28 +1,36 @@
 name: Bug report
 description: Report a reproducible Ultimate De-Slop problem.
 title: "[Bug]: "
-labels: ["bug"]
 body:
   - type: textarea
     id: summary
     attributes:
       label: Summary
-      description: What went wrong?
+      description: What went wrong in one or two sentences?
     validations:
       required: true
-  - type: input
-    id: harness
+  - type: textarea
+    id: environment
     attributes:
-      label: Harness
-      description: Codex, Claude, OpenCode, Cursor, Pi, Command Code, Hermes, or OpenClaw.
+      label: Environment
+      description: OS, python3 --version output, bash --version output, harness (DESLOP_HARNESS) and agent CLI version.
+      placeholder: "macOS 14.5 / Ubuntu 24.04; python3 3.12.x; bash 5.x; DESLOP_HARNESS=codex, codex version ..."
     validations:
       required: true
   - type: textarea
     id: command
     attributes:
-      label: Command
-      description: Paste the command you ran.
+      label: Observed command
+      description: Exact command you ran and the repository state (clean tree or --allow-dirty).
       render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Sanitized reproduction
+      description: Minimal steps and the smallest relevant excerpt from .deslop/runs/ or deslop-status.py. Redact secrets, tokens, private code, and full transcripts.
+      render: text
     validations:
       required: true
   - type: textarea
@@ -35,11 +43,12 @@ body:
     id: actual
     attributes:
       label: Actual behavior
+      description: What happened instead? Include the stop reason from deslop-status.py or .deslop/state.json loop_outcome when relevant.
     validations:
       required: true
   - type: textarea
-    id: logs
+    id: notes
     attributes:
-      label: Sanitized logs
-      description: Include only non-sensitive excerpts from `.deslop/runs/`.
+      label: Sanitized excerpts (optional)
+      description: Short non-sensitive excerpts only. Do not attach secrets, credentials, private repository contents, or entire logs.
       render: text

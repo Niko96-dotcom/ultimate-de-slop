@@ -114,8 +114,8 @@ Sources checked 2026-09-16: [skills and sync](https://prod.cursor.com/docs/skill
 
 ### Cloud Context loader
 
-`templates/cursor/cloud/SKILL.md` is a single-file cloud entry for hosts whose
+`templates/cursor/cloud-entry.md` is a single-file cloud entry for hosts whose
 User Context copy does not follow local updates or cannot mount supporting files.
-Install that entry as the cloud User Context skill. It fetches the current published
+Save that entry as `SKILL.md` in the cloud User Context skill. It fetches the current published
 package into the execution VM and pins that checkout for the life of the run.
 Keep the full package installed for local CLIs; the loader is only a cloud entry.

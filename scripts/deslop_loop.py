@@ -638,6 +638,14 @@ def execute_loop(
             return finish(root, stop_reason="stop_file", iterations_completed=fix_count,
                           settings=settings, baseline_ids=baseline_ids)
 
+        unresolved = unresolved_findings(root, settings.priorities)
+        if unresolved:
+            first = unresolved[0]
+            print(f"Unresolved finding requires explicit recovery: {first.get('id')}", file=sys.stderr)
+            return finish(root, stop_reason="needs_recovery", iterations_completed=fix_count,
+                          settings=settings, baseline_ids=baseline_ids,
+                          halt_finding_id=str(first.get("id")), halt_status=str(first.get("status")))
+
         try:
             next_id = choose_next_id(root, settings.priorities)
         except RuntimeError as exc:
@@ -921,7 +929,7 @@ def execute_until_clean(root: Path, *, settings, commit: bool, auto_revert: bool
     def stop(reason: str, **overrides) -> int:
         outcome = dict(iterations_completed=fix_used, settings=settings, baseline_ids=baseline_ids,
                        review_calls_completed=review_used, max_review_calls=max_rev,
-                       elapsed_seconds=elapsed, max_seconds=max_sec, goal=goal)
+                       elapsed_seconds=current_elapsed(), max_seconds=max_sec, goal=goal)
         outcome.update(overrides)
         return finish(root, stop_reason=reason, **outcome)
 
@@ -967,11 +975,18 @@ def execute_until_clean(root: Path, *, settings, commit: bool, auto_revert: bool
             return stop("stage_failed", halt_status="stage_failed")
         waves = int(progress.get("consecutive_empty_review_waves", 0) or 0)
 
+        unresolved = unresolved_findings(root, goal_priorities)
+        if unresolved:
+            first = unresolved[0]
+            print(f"Unresolved finding requires explicit recovery: {first.get('id')}", file=sys.stderr)
+            return stop("needs_recovery", halt_finding_id=str(first.get("id")),
+                        halt_status=str(first.get("status")))
+
         # Clean gate BEFORE budget halts: budgets mean "cannot start another
         # stage", never "clean at cap is exhausted".
         if waves >= required:
             if inventory_is_truncated(root):
-                print("Inventory truncated: refusing until-clean claim.", file=sys.stderr)
+                print("Inventory incomplete or invalid: refusing until-clean claim.", file=sys.stderr)
                 return stop("stage_failed", halt_status="inventory_truncated")
             blocking = _check_unresolved_blocking(root, goal_priorities)
             if blocking:
@@ -984,24 +999,24 @@ def execute_until_clean(root: Path, *, settings, commit: bool, auto_revert: bool
                 print(f"deslop-loop: stage failed: {exc}", file=sys.stderr)
                 return stop("stage_failed", halt_status="next_failed")
             if recheck is None:
-                print(f"Clean: {required} complete empty sweeps of all partitions at {goal_priority_str} (scope-limited).")
                 try:
                     fp_done = content_fingerprint(root)
                 except OSError as exc:
                     print(f"deslop-loop: error: could not fingerprint clean tree: {exc}", file=sys.stderr)
                     return stop("stage_failed", halt_status="stage_failed")
-                code = stop("until_clean")
                 try:
                     st = load_state(root)
                     g = load_loop_goal(st)
-                    if g is not None:
-                        g["completed_fingerprint"] = fp_done
-                        st["loop_goal"] = g
-                        save_state(root, st)
+                    if g is None:
+                        raise OSError("goal missing before completion")
+                    g["completed_fingerprint"] = fp_done
+                    st["loop_goal"] = g
+                    save_state(root, st)
                 except OSError as exc:
                     print(f"deslop-loop: error: could not persist completion fingerprint: {exc}", file=sys.stderr)
-                    return 1
-                return code
+                    return stop("stage_failed", halt_status="completion_fingerprint_failed")
+                print(f"Clean: {required} complete empty sweeps of all partitions at {goal_priority_str} (scope-limited).")
+                return stop("until_clean")
             # Queue reappeared after sweeps: fall through to fix path.
 
         if elapsed >= max_sec:
@@ -1059,7 +1074,8 @@ def execute_until_clean(root: Path, *, settings, commit: bool, auto_revert: bool
                     _finalize_reservation_and_save(root, elapsed=current_elapsed())
                 except OSError:
                     pass
-                return stop("stage_failed", halt_finding_id=next_id, halt_status="stage_failed", review_calls_completed=review_used + 1, elapsed_seconds=current_elapsed())
+                return stop("stage_failed", halt_finding_id=next_id, halt_status="stage_failed",
+                            elapsed_seconds=current_elapsed())
             try:
                 _finalize_reservation_and_save(root, elapsed=current_elapsed())
             except OSError as exc:
@@ -1232,6 +1248,8 @@ def _stored_until_clean_goal(root: Path) -> dict[str, Any] | None:
 def _completed_fingerprint_stale(root: Path, goal: dict[str, Any]) -> bool:
     if str(goal.get("status") or "") != "complete":
         return False
+    if inventory_is_truncated(root):
+        return True
     stored = goal.get("completed_fingerprint")
     if not isinstance(stored, str) or not stored:
         return True

@@ -5,6 +5,10 @@ description: Run a persistent repo-wide de-slop loop in Cursor Projects and Clou
 
 # Ultimate De-Slop — cloud entry
 
+This template is named `cloud-entry.md` in the package so other skill scanners do
+not discover it as a second skill. When adding it to Cursor User Context, save
+its contents as `SKILL.md` there.
+
 Use only when the user asks for Ultimate De-Slop or an iterative repo-wide code-quality cleanup. Review-only requests remain read-only. Do not apply this to unrelated tasks or ordinary small fixes.
 
 This cloud entry loads the maintained standalone package from https://github.com/Niko96-dotcom/ultimate-de-slop. Do not execute the older supporting files beside this Context document. No Subscription Squad, external model CLI, API key, or additional login is required.

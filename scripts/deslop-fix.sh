@@ -258,7 +258,7 @@ cat > "$prompt" <<EOF
 You are running as the selected Ultimate De-Slop fixer role. Do not delegate to another fixer, load skill files recursively, or run deslop-loop.sh, deslop-fix.sh, or any nested de-slop harness command from inside this fixer session.
 
 Fix exactly one finding. Do not fix unrelated issues. Do not clean up while you are here. Preserve behavior unless explicitly required. Prefer deleting or simplifying complexity to adding abstraction. Use existing targeted coverage when it proves the criteria; add a regression test when needed. Never weaken tests. Run the expected checks when practical.
-Perform the edit in the working tree before reporting success. Do not merely describe the fix. Before returning, inspect git status or git diff and make sure the files you list in changed_files actually changed.
+Perform the edit in the working tree before reporting success. Do not merely describe the fix. Before returning, inspect git status or git diff. List in changed_files only files changed during THIS fixer invocation; a partial patch already present when you started is not a new change. For example, if quantity.py was already dirty and you only edit tests/test_quantity.py, list only tests/test_quantity.py.
 Hard budgets from \`.deslop/config.json\` are enforced after your edit: stay within max_changed_files_per_fix and max_changed_lines_per_fix for this attempt delta.
 
 Return exactly one JSON object, no markdown fences and no prose, with these keys:
@@ -505,6 +505,16 @@ claimed_files = sorted(set(str(p) for p in changed_files))
 fix["reported_changed_files"] = claimed_files
 fix["changed_files"] = actual_changed
 changed_files = actual_changed
+prior_dirty = {line[3:] for line in before_status.splitlines() if len(line) >= 4}
+overreported = set(claimed_files) - set(actual_changed)
+recoverable_overreport = (
+    bool(actual_changed)
+    and set(actual_changed).issubset(claimed_files)
+    and overreported <= prior_dirty
+    and not any(path.startswith((".deslop/", ".opencode/")) for path in overreported)
+)
+if recoverable_overreport and overreported:
+    fix["normalized_preexisting_dirty_files"] = sorted(overreported)
 _, attempt_lines = count_attempt_delta(attempt_delta)
 attempt_files = len(actual_changed)
 tracked_paths = set(subprocess.check_output(["git", "ls-files", "-z", "--cached"], cwd=root).decode().split("\0"))
@@ -525,7 +535,7 @@ if changed_during_attempt and (attempt_files > max_files or attempt_lines > max_
 
 if status_text in {"blocked", "cannot_fix", "failed"}:
     target["status"] = "blocked"
-elif claimed_files != actual_changed:
+elif claimed_files != actual_changed and not recoverable_overreport:
     target["status"] = "needs_human"
     target["block_reason"] = "reported changed_files does not match actual content changes"
 elif budget_breach:

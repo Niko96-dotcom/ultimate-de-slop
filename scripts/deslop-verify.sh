@@ -242,7 +242,7 @@ You are running as the selected Ultimate De-Slop verifier role. Do not delegate 
 Do not edit files. Verify the original finding against the check output and the per-finding fix attempt context. Base the finding-specific verdict on the delta introduced during this fix attempt. The current git diff may include earlier verified but uncommitted findings; use it only for interaction/regression context and do not fail solely because unrelated baseline changes are present. Judge whether the fix truly satisfies acceptance criteria, whether behavior stayed intact, and whether the patch created new slop. Return PASS, FAIL, NEEDS_HUMAN, or FALSE_POSITIVE.
 
 Every verdict requires non-empty evidence. NEEDS_HUMAN requires non-empty concerns or required_follow_up explaining what a human must decide. FALSE_POSITIVE evidence must explain why the original finding was invalid.
-If acceptance criteria or expected checks imply behavioral coverage (unittest/pytest/assert/test), a PASS should only stand when the fix also added or updated a focused test; otherwise return NEEDS_HUMAN explaining the test gap.
+For behavioral changes, require a passing focused test. A pre-existing test is sufficient when it already covers the acceptance criteria: name that test and its passing check result in the evidence. Require a test-file change only when an acceptance criterion explicitly says to add or update a test. Do not return NEEDS_HUMAN solely because an adequate existing test was unchanged.
 
 Return exactly one JSON object, no markdown fences and no prose, with these keys:
 finding_id, verdict, confidence, evidence, concerns, required_follow_up.
@@ -354,6 +354,15 @@ def expects_behavioral_coverage(item: dict) -> bool:
     )
     return any(pattern.search(entry) for entry in criteria)
 
+def requires_test_change(item: dict) -> bool:
+    criteria = [str(entry) for entry in (item.get("acceptance_criteria") or [])]
+    pattern = re.compile(
+        r"\b(?:add|write|create|introduce|extend|update)\b.{0,60}\b(?:regression|unit|integration)?\s*(?:tests?|specs?|assertions?)\b|"
+        r"\bnew\s+(?:regression|unit|integration)?\s*(?:tests?|specs?)\b",
+        re.IGNORECASE,
+    )
+    return any(pattern.search(entry) for entry in criteria)
+
 errors = []
 if not evidence:
     errors.append("evidence must be a non-empty list explaining the verdict")
@@ -371,6 +380,10 @@ if verdict == "PASS" and not changed:
     errors.append("PASS rejected: last_fix.changed_files is empty; fix artifacts must identify actual changed files")
 if verdict == "PASS" and checks_failed(checks, finding_id=expected_id, finding=finding, verify=data):
     errors.append("PASS rejected: checks are missing, blocked, failed, mismatched, or lack executed evidence")
+if verdict == "PASS" and requires_test_change(finding) and not any(
+    looks_like_test_path(entry) for entry in changed
+):
+    errors.append("PASS rejected: acceptance criteria explicitly require a new or updated test, but the fix changed no test/spec file")
 if verdict == "PASS" and expects_behavioral_coverage(finding):
     if not any(looks_like_test_path(entry) for entry in changed) and not any(
         re.search(r"(?:tests?/|test_[\w]+|[\w]+\.(?:test|spec)\.)", item, re.I)

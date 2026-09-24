@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -170,6 +171,8 @@ def seconds_setting(
     try:
         value = float(raw)
     except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
         return default
     return max(value, 0.0)
 

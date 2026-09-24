@@ -4,6 +4,8 @@ Child-agent sessions run through `scripts/deslop-agent-runner.py` (plus the Code
 
 Set `DESLOP_HARNESS=<harness>` per run. When unset, the harness is read from `.ultimate-de-slop-install.json` in the installed skill directory; otherwise the default is `codex`. Child agents use the harness session/OAuth model; set `DESLOP_MODEL` only on explicit override (`DESLOP_CODEX_MODEL` remains accepted for Codex compatibility). Prefer harness `login` flows over API-key env vars.
 
+For Codex, `DESLOP_CODEX_REASONING_EFFORT=medium` overrides the CLI's configured reasoning effort for this harness invocation only. Supported values are `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; the selected model must support the chosen value. This does not modify the user's global Codex configuration.
+
 ## Adapter matrix
 
 | Harness | Status | Invocation style |
@@ -27,3 +29,5 @@ For OpenClaw (and any future harness without a confirmed contract): fail closed 
 Wall-clock cap: `--agent-timeout-seconds` / `DESLOP_TIMEOUT_SECONDS` (default 5400). Idle cap: `--agent-idle-timeout-seconds` / `DESLOP_IDLE_TIMEOUT_SECONDS` (Codex streams reliably so it keeps an idle cap; known-buffering harnesses default idle-disabled). `scripts/deslop-doctor.py` prints effective values. Long silent tool sessions tripping the idle cap are environment behavior, reported as external stops — never as clean.
 
 Read-only adapter commands follow the [Claude CLI tool restriction contract](https://code.claude.com/docs/en/cli-usage) and [Cursor Ask mode](https://prod.cursor.com/docs/cli/overview). They are not an operating-system jail. The runner also detects source changes and rejects unauthorized control-state edits. OpenCode receives its deny-mutation role policy through invocation-local configuration.
+
+OpenCode reviews must record a completed source-file read within the requested partition. A JSON response without that evidence fails as `review_uninspected` and cannot advance an empty sweep. The OpenCode local goals ledger at `.opencode/goals/state.json` is treated as provider runtime state only while untracked; a tracked copy remains subject to change checks.

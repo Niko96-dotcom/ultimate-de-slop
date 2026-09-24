@@ -1,6 +1,6 @@
 # Code of Conduct
 
-This project follows the Contributor Covenant Code of Conduct, version 2.1.
+This project uses the following code of conduct for its community spaces.
 
 ## Our Pledge
 

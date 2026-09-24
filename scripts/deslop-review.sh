@@ -254,7 +254,7 @@ EOF
 fi
 
 set +e
-"$SCRIPT_DIR/deslop-agent-runner.py" --root "$ROOT" --prompt "$prompt" --raw-output "$raw" --last-message "$last_message" --runner-json "$runner_json" --schema "$schema" --sandbox read-only --kind review
+"$SCRIPT_DIR/deslop-agent-runner.py" --root "$ROOT" --prompt "$prompt" --raw-output "$raw" --last-message "$last_message" --runner-json "$runner_json" --schema "$schema" --sandbox read-only --kind review --review-partition "${PARTITION:-.}"
 code=$?
 set -e
 if [ "$code" -ne 0 ]; then

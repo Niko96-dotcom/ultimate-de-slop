@@ -38,9 +38,9 @@ same blocked turn; the cloud launcher returns immediately so you can dispatch th
    ```
    The deterministic harness controls progression: it keeps reviewing and fixing until no actionable slop remains at goal scope, or a hard stop fires. Bounded form (only when the user explicitly bounds the run):
    ```sh
-   "$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations N [--max-review-calls M] [--max-seconds S] [--priority P0,P1,P2]
+   "$SKILL_DIR/scripts/deslop-loop.sh" --max-iterations N [--priority P0,P1,P2]
    ```
-   `--until-clean` defaults: scope `P0,P1,P2`, 100 total fix attempts, 200 review calls, 28800 seconds. `--max-iterations` / `--max-review-calls` / `--max-seconds` override the corresponding cap. The goal (scope, caps, usage) persists in `TARGET/.deslop/state.json`.
+   `--until-clean` defaults: scope `P0,P1,P2`, 100 total fix attempts, 200 review calls, 28800 seconds. With `--until-clean`, `--max-iterations` / `--max-review-calls` / `--max-seconds` override the corresponding cap. The goal (scope, caps, usage) persists in `TARGET/.deslop/state.json`.
 4. After every loop command, run `"$SKILL_DIR/scripts/deslop-status.py"` and read `loop_outcome` (stop reason, verified IDs, queued next, `needs_human` / `false_positive` detail). Do not load `.deslop/runs/` or raw agent logs into chat unless debugging.
 5. If a completed goal is stale because source changed, run `deslop-continue.sh`: the runtime reopens coverage using the remaining budget. This does not need `--new-goal`. Only if no stop condition in step 6 applies and work remains (`next` is not `NONE`, or the goal scope is not yet proven clean), keep going in the same task with:
    ```sh

@@ -17,6 +17,8 @@ The `until_clean` outcome requires ALL of the following at the goal scope. Expli
 2. An empty accepted queue alone is NOT clean. Sweeps, not queue length, prove cleanliness.
 3. No finding left in `fixing`, `fixed_unverified`, `blocked`, or `needs_human`. Unresolved work prevents completion even when the queue looks empty.
 4. Full coverage is invalidated by any tree change, priority/scope change, or partition/inventory change since the sweeps. After invalidation, the two-sweep count restarts.
+5. The inventory must be present, structurally valid, and untruncated; a missing or malformed inventory cannot prove complete coverage.
+6. OpenCode partition reviews must show a completed read of a source file in scope. A review with no such access fails the stage instead of counting as empty coverage.
 
 ## Hard stops (stop immediately, report incomplete)
 

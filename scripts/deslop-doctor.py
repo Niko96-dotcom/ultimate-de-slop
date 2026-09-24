@@ -125,6 +125,15 @@ def build_report(harness: str | None = None) -> dict[str, Any]:
             level="ok",
         )
     )
+    if harness_name != "native":
+        checks.append(
+            check_item(
+                False,
+                "model_compatibility",
+                "Static check only: this doctor has not invoked the model. A configured model can still be rejected by the provider at run time.",
+                level="warning",
+            )
+        )
 
     root = repo_root_optional()
     if root is None:
@@ -215,7 +224,7 @@ def print_human(report: dict[str, Any]) -> None:
     print("Ultimate De-Slop Doctor")
     print(f"Harness: {report['harness']}")
     print(f"Model: {report.get('model') or 'default'}")
-    print(f"Ready: {'yes' if report['ready'] else 'no'}")
+    print(f"Static readiness: {'yes' if report['ready'] else 'no'}")
     if report.get("repo_root"):
         print(f"Repo: {report['repo_root']}")
     print("Checks:")

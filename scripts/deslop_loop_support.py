@@ -146,6 +146,11 @@ def _is_deslop_path(path_text: str) -> bool:
     return cleaned == ".deslop" or cleaned.startswith(".deslop/")
 
 
+def _is_untracked_opencode_state(xy: str, path_text: str) -> bool:
+    """OpenCode's local goals ledger is provider state, not repo source."""
+    return xy == "??" and path_text == ".opencode/goals/state.json"
+
+
 def _parse_porcelain_nul(raw: bytes) -> list[tuple[str, str]]:
     """Parse `git status --porcelain=v1 -z` into (xy, path) entries.
 
@@ -181,7 +186,7 @@ def filtered_git_porcelain(root: Path) -> str:
     entries = _parse_porcelain_nul(raw)
     kept: list[str] = []
     for xy, path in entries:
-        if _is_deslop_path(path):
+        if _is_deslop_path(path) or _is_untracked_opencode_state(xy, path):
             continue
         kept.append(f"{xy} {path}")
     return "\n".join(kept).strip()
@@ -206,7 +211,7 @@ def worktree_fingerprint(root: Path) -> str:
     filtered_lines: list[str] = []
     untracked_paths: list[str] = []
     for xy, path in entries:
-        if _is_deslop_path(path):
+        if _is_deslop_path(path) or _is_untracked_opencode_state(xy, path):
             continue
         filtered_lines.append(f"{xy} {path}")
         if xy == "??":
@@ -379,6 +384,18 @@ def validate_positive_finite(name: str, value: Any) -> float:
     return result
 
 
+def validate_nonnegative_finite(name: str, value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a nonnegative finite number")
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a nonnegative finite number")
+    if not math.isfinite(result) or result < 0:
+        raise ValueError(f"{name} must be a nonnegative finite number")
+    return result
+
+
 @dataclass(frozen=True)
 class LoopSettings:
     max_iterations: int
@@ -463,15 +480,17 @@ def resolve_settings(
             # Until-clean requires at least two complete empty sweeps; honor larger
             # requests but never allow fewer than two.
             empty_waves = max(UNTIL_CLEAN_REQUIRED_EMPTY_SWEEPS, candidate)
-        agent_timeout = (
-            float(agent_timeout_seconds)
+        agent_timeout = validate_nonnegative_finite(
+            "agent_timeout_seconds",
+            agent_timeout_seconds
             if agent_timeout_seconds is not None
-            else float(config.get("agent_timeout_seconds", CONFIG_DEFAULTS["agent_timeout_seconds"]))
+            else config.get("agent_timeout_seconds", CONFIG_DEFAULTS["agent_timeout_seconds"]),
         )
-        agent_idle = (
-            float(agent_idle_timeout_seconds)
+        agent_idle = validate_nonnegative_finite(
+            "agent_idle_timeout_seconds",
+            agent_idle_timeout_seconds
             if agent_idle_timeout_seconds is not None
-            else float(config.get("agent_idle_timeout_seconds", CONFIG_DEFAULTS["agent_idle_timeout_seconds"]))
+            else config.get("agent_idle_timeout_seconds", CONFIG_DEFAULTS["agent_idle_timeout_seconds"]),
         )
         settings = LoopSettings(
             max_iterations=max_iter,
@@ -518,15 +537,17 @@ def resolve_settings(
         priority=priority_str,
         review_every=review_every_val,
         empty_review_waves_required=waves_val,
-        agent_timeout_seconds=(
-            float(agent_timeout_seconds)
+        agent_timeout_seconds=validate_nonnegative_finite(
+            "agent_timeout_seconds",
+            agent_timeout_seconds
             if agent_timeout_seconds is not None
-            else float(config.get("agent_timeout_seconds", CONFIG_DEFAULTS["agent_timeout_seconds"]))
+            else config.get("agent_timeout_seconds", CONFIG_DEFAULTS["agent_timeout_seconds"]),
         ),
-        agent_idle_timeout_seconds=(
-            float(agent_idle_timeout_seconds)
+        agent_idle_timeout_seconds=validate_nonnegative_finite(
+            "agent_idle_timeout_seconds",
+            agent_idle_timeout_seconds
             if agent_idle_timeout_seconds is not None
-            else float(config.get("agent_idle_timeout_seconds", CONFIG_DEFAULTS["agent_idle_timeout_seconds"]))
+            else config.get("agent_idle_timeout_seconds", CONFIG_DEFAULTS["agent_idle_timeout_seconds"]),
         ),
         until_clean=False,
         max_review_calls=None,
@@ -570,17 +591,30 @@ def partition_paths(root: Path) -> list[str]:
 
 
 def inventory_is_truncated(root: Path) -> bool:
-    """True when inventory reports truncated coverage (fail closed on corrupt)."""
+    """True when inventory cannot prove full coverage."""
     path = root / ".deslop" / "inventory.json"
     if not path.exists():
-        return False
+        return True
     try:
         payload = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return True
     if not isinstance(payload, dict):
         return True
-    return bool(payload.get("truncated"))
+    partitions = payload.get("risk_partitions")
+    count = payload.get("risk_partition_count")
+    return (
+        payload.get("version") != 1
+        or payload.get("candidate_truncated") is not False
+        or payload.get("truncated") is not False
+        or payload.get("risk_partitions_truncated") is not False
+        or not isinstance(partitions, list)
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or count != len(partitions)
+        or any(not isinstance(item, dict) or not isinstance(item.get("path"), str)
+               or not item["path"] for item in partitions)
+    )
 
 
 def loop_progress(state: dict[str, Any]) -> dict[str, Any]:

@@ -189,6 +189,24 @@ class LoopSupportTests(unittest.TestCase):
             self.assertEqual(float(settings.max_seconds or 0), 28800.0)
             self.assertEqual(settings.empty_review_waves_required, 2)
 
+    def test_nonfinite_agent_timeout_cannot_disable_goal_deadline(self) -> None:
+        from deslop_loop_support import resolve_settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_repo(root)
+            for overrides in (
+                {"agent_timeout_seconds": float("nan")},
+                {"agent_idle_timeout_seconds": float("inf")},
+            ):
+                with self.subTest(overrides=overrides):
+                    with self.assertRaisesRegex(ValueError, "finite"):
+                        resolve_settings(
+                            root, max_iterations=None, priority=None, review_every=None,
+                            empty_review_waves_required=None, persist=False, until_clean=True,
+                            **overrides,
+                        )
+
     def test_two_sweeps_required(self) -> None:
         from deslop_loop_support import review_wave_result
 
@@ -283,7 +301,8 @@ class LoopSupportTests(unittest.TestCase):
             self.assertLessEqual(progress4["partition_index"], max(len(progress4["partitions"]) - 1, 0))
 
     def test_filtered_porcelain_excludes_deslop(self) -> None:
-        from deslop_loop_support import filtered_git_porcelain
+        from deslop_loop_support import filtered_git_porcelain, worktree_fingerprint
+        from deslop_snapshot import snapshot
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -297,9 +316,20 @@ class LoopSupportTests(unittest.TestCase):
             # Only .deslop dirty -> filtered clean.
             (root / ".deslop" / "scratch.txt").write_text("scratch\n")
             self.assertEqual(filtered_git_porcelain(root), "")
+            baseline = worktree_fingerprint(root)
+            provider_state = root / ".opencode" / "goals" / "state.json"
+            provider_state.parent.mkdir(parents=True)
+            provider_state.write_text('{"goals": []}\n')
+            self.assertEqual(filtered_git_porcelain(root), "")
+            self.assertEqual(worktree_fingerprint(root), baseline)
+            self.assertNotIn(".opencode/goals/state.json", snapshot(root))
             # Real dirty -> filtered non-empty.
             (root / "sample.py").write_text("x=2\n")
             self.assertNotEqual(filtered_git_porcelain(root), "")
+            (root / "sample.py").write_text("x=1\n")
+            run(["git", "add", ".opencode/goals/state.json"], cwd=root, check=True)
+            self.assertNotEqual(filtered_git_porcelain(root), "")
+            self.assertIn(".opencode/goals/state.json", snapshot(root))
 
     def test_git_failure_denies_dirty_fail_closed(self) -> None:
         from deslop_loop_support import filtered_git_porcelain, should_allow_dirty
@@ -758,6 +788,32 @@ printf '%s\\n' "$payload"
             state = read_state(root)
             self.assertEqual(state["loop_outcome"]["stop_reason"], "needs_recovery")
             self.assertNotEqual(state["loop_outcome"]["stop_reason"], "until_clean")
+            self.assertEqual(count_reviews(root), 0)
+
+    def test_interrupted_fix_halts_before_spending_review_budget(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            (root / ".gitignore").write_text(".deslop/\nfake-bin/\n")
+            run(["git", "add", "sample.py", ".gitignore"], cwd=root, check=True)
+            run(["git", "commit", "-m", "sample"], cwd=root, check=True)
+            run([str(SCRIPT_DIR / "deslop-init.sh")], cwd=root, check=True)
+            write_findings(root, minimal_finding("DSL-000001", status="fixing"))
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "codex", EMPTY_STUB)
+            env = {"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}", "DESLOP_HARNESS": "codex"}
+            result = run(
+                [str(SCRIPT_DIR / "deslop-loop.sh"), "--until-clean",
+                 "--max-review-calls", "1", "--max-iterations", "2"],
+                cwd=root, env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            state = read_state(root)
+            self.assertEqual(state["loop_outcome"]["stop_reason"], "needs_recovery")
+            self.assertEqual(state["loop_outcome"]["halt_finding_id"], "DSL-000001")
+            self.assertEqual(state["loop_goal"]["consumed"]["review_calls"], 0)
+            self.assertEqual(count_reviews(root), 0)
 
     def test_truncated_inventory_refuses_clean(self) -> None:
         tempdir, root = self.make_repo()
@@ -806,6 +862,25 @@ printf '%s\\n' "$payload"
             self.assertNotEqual(after["loop_outcome"]["stop_reason"], "until_clean")
             self.assertEqual(after["loop_outcome"]["stop_reason"], "stage_failed")
             self.assertEqual(after["loop_outcome"]["halt_status"], "inventory_truncated")
+
+    def test_missing_inventory_cannot_prove_clean(self) -> None:
+        from deslop_loop import _completed_fingerprint_stale
+        from deslop_loop_support import inventory_is_truncated
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".deslop").mkdir()
+            self.assertTrue(inventory_is_truncated(root))
+            self.assertTrue(_completed_fingerprint_stale(
+                root, {"status": "complete", "completed_fingerprint": "old-proof"}))
+            path = root / ".deslop" / "inventory.json"
+            for payload in ({}, {"truncated": False}, {"version": 1, "truncated": False,
+                                                       "candidate_truncated": False,
+                                                       "risk_partitions_truncated": False,
+                                                       "risk_partitions": [], "risk_partition_count": 1}):
+                with self.subTest(payload=payload):
+                    path.write_text(json.dumps(payload))
+                    self.assertTrue(inventory_is_truncated(root))
 
     def test_git_status_failure_denies_dirty_no_review(self) -> None:
         tempdir, root = self.make_repo()

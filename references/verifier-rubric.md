@@ -28,5 +28,5 @@ The verifier is read-only, adversarial but fair, and runs in a separate context 
 ## Quality gates (enforced by harness)
 
 - Every verdict needs non-empty `evidence`.
-- `PASS` is rejected when acceptance criteria or expected checks imply behavioral coverage (unittest/pytest/assert/test) but `last_fix.changed_files` includes no test/spec path and no covering existing test is named.
+- `PASS` is rejected when acceptance criteria or expected checks imply behavioral coverage (unittest/pytest/assert/test) but `last_fix.changed_files` includes no test/spec path and no covering existing test is named with its passing check result. An explicit acceptance criterion to add or update a test still requires a test/spec file change.
 - Thin, hedged ("should pass", "seems fine"), or evidence-free verdicts are rejected before finalize.

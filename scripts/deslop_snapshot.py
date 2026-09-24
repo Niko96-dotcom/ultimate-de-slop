@@ -9,10 +9,14 @@ from pathlib import Path
 def snapshot(root: Path) -> dict[str, str]:
     result = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                             cwd=root, check=True, stdout=subprocess.PIPE)
+    tracked = set(subprocess.run(["git", "ls-files", "-z", "--cached"],
+                                 cwd=root, check=True, stdout=subprocess.PIPE).stdout.split(b"\0"))
     manifest = {}
     for raw in set(result.stdout.split(b"\0")) - {b""}:
         name = os.fsdecode(raw)
         if name == ".deslop" or name.startswith(".deslop/"):
+            continue
+        if name == ".opencode/goals/state.json" and raw not in tracked:
             continue
         path = root / name
         try:

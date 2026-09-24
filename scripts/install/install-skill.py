@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import hashlib
 import json
 import os
 import shutil
@@ -15,7 +16,7 @@ from pathlib import Path
 
 
 SKILL_NAME = "ultimate-de-slop"
-INSTALLER_VERSION = 2
+INSTALLER_VERSION = 3
 
 LAYOUTS = {
     "agents": {
@@ -90,7 +91,7 @@ def skill_root() -> Path:
 
 
 def should_skip(path: Path) -> bool:
-    if path.name in SKIP_NAMES or path.suffix == ".pyc":
+    if path.name in SKIP_NAMES or path.name == MARKER or path.suffix == ".pyc":
         return True
     return any(part in SKIP_DIRS for part in path.parts)
 
@@ -115,7 +116,22 @@ def read_marker(target: Path) -> dict[str, object] | None:
         data = json.loads(marker.read_text())
     except json.JSONDecodeError:
         return None
-    return data if isinstance(data, dict) else None
+    return data if isinstance(data, dict) and data.get("installer") == SKILL_NAME else None
+
+
+def file_digest(path: Path) -> str:
+    data = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+    return hashlib.sha256(data).hexdigest()
+
+
+def source_files(source: Path) -> dict[str, str]:
+    """Record the files this installer owns so updates can remove stale copies."""
+    return {
+        item.relative_to(source).as_posix(): file_digest(item)
+        for item in source.rglob("*")
+        if not should_skip(item.relative_to(source))
+        and (item.is_file() or item.is_symlink())
+    }
 
 
 def copy_tree(source: Path, target: Path) -> None:
@@ -125,14 +141,14 @@ def copy_tree(source: Path, target: Path) -> None:
         if should_skip(rel):
             continue
         destination = target / rel
-        if item.is_dir():
-            destination.mkdir(parents=True, exist_ok=True)
-            continue
         if item.is_symlink():
             if destination.exists() or destination.is_symlink():
                 destination.unlink()
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.symlink_to(os.readlink(item))
+            continue
+        if item.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists() and filecmp.cmp(item, destination, shallow=False):
@@ -140,19 +156,77 @@ def copy_tree(source: Path, target: Path) -> None:
         shutil.copy2(item, destination)
 
 
+def backup_root(target: Path) -> Path:
+    skills_dir = next(parent for parent in target.parents if parent.name == "skills")
+    return skills_dir.parent / "skill-backups"
+
+
 def backup_existing(target: Path, dry_run: bool) -> Path | None:
     if not target.exists() or read_marker(target):
         return None
-    backup = target.with_name(f"{target.name}.backup.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+    # A backup under skills/ would itself be discovered as another skill.
+    backup_dir = backup_root(target)
+    backup = backup_dir / f"{target.name}.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     if dry_run:
         return backup
     suffix = 1
     candidate = backup
     while candidate.exists():
         suffix += 1
-        candidate = target.with_name(f"{backup.name}.{suffix}")
+        candidate = backup_dir / f"{backup.name}.{suffix}"
+    backup_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(target, candidate, symlinks=True)
     return candidate
+
+
+def prune_stale_files(source: Path, target: Path, marker: dict[str, object] | None) -> list[str]:
+    if not marker:
+        return []
+    current = source_files(source)
+    previous = marker.get("files")
+    stale: dict[str, str] = {}
+    if isinstance(previous, dict):
+        stale = {name: digest for name, digest in previous.items()
+                 if isinstance(name, str) and isinstance(digest, str) and name not in current}
+    elif marker.get("installer_version") == 2:
+        # Version 2 had no manifest; preserve any obsolete files outside discovery.
+        stale = {
+            item.relative_to(target).as_posix(): ""
+            for item in target.rglob("*")
+            if (item.is_file() or item.is_symlink())
+            and item.name != MARKER
+            and item.relative_to(target).as_posix() not in current
+        }
+    removed: list[str] = []
+    for name, digest in stale.items():
+        relative = Path(name)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            continue
+        path = target / name
+        if not path.parent.resolve().is_relative_to(target.resolve()):
+            continue
+        if path.is_file() or path.is_symlink():
+            if digest and file_digest(path) == digest:
+                path.unlink()
+            else:
+                # Preserve edits while moving obsolete files out of skill discovery.
+                backup_dir = backup_root(target)
+                backup = backup_dir / f"{target.name}.stale.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}" / relative
+                suffix = 1
+                while backup.exists():
+                    suffix += 1
+                    backup = backup_dir / f"{target.name}.stale.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.{suffix}" / relative
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(backup))
+            removed.append(name)
+            parent = path.parent
+            while parent != target:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+    return removed
 
 
 def write_marker(target: Path, harness: str, scope: str, source: Path) -> None:
@@ -163,6 +237,7 @@ def write_marker(target: Path, harness: str, scope: str, source: Path) -> None:
         "scope": scope,
         "source": str(source),
         "installed_at": now(),
+        "files": source_files(source),
     }
     (target / MARKER).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
@@ -259,7 +334,7 @@ def codex_marketplace_root(home: Path) -> Path:
     return home / ".codex" / "marketplaces" / SKILL_NAME
 
 
-def install_codex_command_plugin(source: Path, home: Path, dry_run: bool) -> list[str]:
+def install_codex_command_plugin(source: Path, home: Path, dry_run: bool) -> tuple[list[str], str]:
     template_root = source / "templates" / "codex"
     marketplace_target = codex_marketplace_root(home)
     actions: list[str] = []
@@ -271,6 +346,14 @@ def install_codex_command_plugin(source: Path, home: Path, dry_run: bool) -> lis
             "codex plugin marketplace",
         )
     )
+    # Keep the catalog template outside .agents/ in the source: the repository
+    # ignores harness-specific .agents/ directories.
+    catalog_source = template_root / "marketplace-catalog.json"
+    catalog_target = marketplace_target / ".agents" / "plugins" / "marketplace.json"
+    actions.append(f"codex plugin marketplace catalog: {catalog_target}")
+    if not dry_run:
+        catalog_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(catalog_source, catalog_target)
     command_source = template_root / "commands" / "ultimate-de-slop.md"
     command_target = marketplace_target / "plugins" / SKILL_NAME / "commands" / "ultimate-de-slop.md"
     actions.append(f"codex plugin command: {command_target}")
@@ -280,44 +363,48 @@ def install_codex_command_plugin(source: Path, home: Path, dry_run: bool) -> lis
     if dry_run:
         actions.append(f"codex plugin marketplace add: {marketplace_target}")
         actions.append("codex plugin add ultimate-de-slop@ultimate-de-slop")
-        return actions
+        return actions, "preview"
     codex = shutil.which("codex")
     if codex is None:
-        actions.append("codex plugin: skipped (codex not on PATH; restart Codex after installing the CLI)")
-        return actions
+        actions.append("codex plugin skipped: codex CLI is not on PATH")
+        return actions, "skipped"
+    codex_env = {**os.environ, "CODEX_HOME": str(home / ".codex")}
     marketplace_result = subprocess.run(
         [codex, "plugin", "marketplace", "add", str(marketplace_target)],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        env=codex_env,
         check=False,
     )
     if marketplace_result.returncode == 0:
         actions.append(f"codex plugin marketplace registered: {marketplace_target}")
-    elif "already" in marketplace_result.stdout.lower():
+    elif "already registered" in marketplace_result.stdout.lower():
         actions.append(f"codex plugin marketplace already registered: {marketplace_target}")
     else:
         actions.append(
             "codex plugin marketplace registration failed: "
             + marketplace_result.stdout.strip().replace("\n", " ")
         )
-        return actions
+        return actions, "failed"
     plugin_result = subprocess.run(
         [codex, "plugin", "add", "ultimate-de-slop@ultimate-de-slop"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        env=codex_env,
         check=False,
     )
     if plugin_result.returncode == 0:
         actions.append("codex plugin installed: ultimate-de-slop@ultimate-de-slop")
-    elif "already" in plugin_result.stdout.lower() or "installed" in plugin_result.stdout.lower():
+    elif "already installed" in plugin_result.stdout.lower():
         actions.append("codex plugin already installed: ultimate-de-slop@ultimate-de-slop")
     else:
         actions.append(
             "codex plugin install failed: " + plugin_result.stdout.strip().replace("\n", " ")
         )
-    return actions
+        return actions, "failed"
+    return actions, "installed"
 
 
 def install_cursor_assets(source: Path, scope: str, home: Path, project_dir: Path, dry_run: bool) -> list[str]:
@@ -339,29 +426,38 @@ def install(args: argparse.Namespace) -> int:
     print(f"Source: {source}")
     print(f"Target: {target}")
 
+    if target.is_symlink():
+        raise ValueError(f"Refusing to install into a symlink: {target}")
     if same_path(source, target):
         print("Target already is the canonical installed skill; no copy needed.")
     else:
+        old_marker = read_marker(target)
         backup = backup_existing(target, args.dry_run)
         if backup:
             print(f"Backup: {backup}")
         if args.dry_run:
             print("Dry run: would copy skill files, excluding .deslop, .git, caches, and .DS_Store.")
         else:
+            if backup:
+                shutil.rmtree(target)
             copy_tree(source, target)
+            removed = prune_stale_files(source, target, old_marker)
             write_marker(target, args.harness, args.scope, source)
             print("Copied skill files.")
+            if removed:
+                print(f"Removed {len(removed)} obsolete installed file(s).")
 
     extra_actions: list[str] = []
+    plugin_status = "not_requested"
     if args.harness == "codex":
         extra_actions = install_codex_profiles(source, args.scope, home, project_dir, args.dry_run)
         for action in extra_actions:
             print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
         if args.scope == "global":
-            plugin_actions = install_codex_command_plugin(source, home, args.dry_run)
+            plugin_actions, plugin_status = install_codex_command_plugin(source, home, args.dry_run)
             for action in plugin_actions:
-                print(f"Installed {action}" if not args.dry_run else f"Dry run: would install {action}")
-            if plugin_actions and not args.dry_run:
+                print(action if not args.dry_run else f"Dry run: would install {action}")
+            if plugin_status == "installed":
                 print("Codex slash command: /ultimate-de-slop (restart Codex or open a new chat if it does not appear).")
     if args.harness == "claude":
         extra_actions = install_claude_assets(source, args.scope, home, project_dir, args.dry_run)
@@ -391,7 +487,7 @@ def install(args: argparse.Namespace) -> int:
         print(f"  Harness auto-detected as {runner_harness} from the install marker (override with DESLOP_HARNESS).")
     else:
         print(f"  Shared fallback installed at {target}; run with a concrete DESLOP_HARNESS adapter.")
-    return 0
+    return 1 if plugin_status == "failed" else 0
 
 
 def parse_args() -> argparse.Namespace:

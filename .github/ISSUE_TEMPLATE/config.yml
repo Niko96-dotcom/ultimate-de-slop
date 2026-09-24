@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discussions
+    url: https://github.com/Niko96-dotcom/ultimate-de-slop/discussions
+    about: Ask usage questions or propose ideas before filing an issue.
+  - name: Security policy
+    url: https://github.com/Niko96-dotcom/ultimate-de-slop/blob/main/SECURITY.md
+    about: Read the private reporting guidance before sharing a vulnerability.

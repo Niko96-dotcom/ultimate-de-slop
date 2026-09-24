@@ -1,26 +1,26 @@
 name: Feature request
 description: Suggest a bounded improvement.
 title: "[Feature]: "
-labels: ["enhancement"]
 body:
   - type: textarea
     id: problem
     attributes:
       label: Problem
-      description: What workflow or safety gap should this solve?
+      description: What workflow or safety gap should this solve? Link any related sanitized behavior.
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
       label: Proposal
-      description: Describe the smallest useful change.
+      description: Describe the smallest useful change and its observable result.
     validations:
       required: true
   - type: textarea
     id: alternatives
     attributes:
       label: Alternatives considered
+      description: What else did you try (flags, scripts/deslop-doctor.py, manual steps)?
   - type: dropdown
     id: area
     attributes:
@@ -34,3 +34,9 @@ body:
         - other
     validations:
       required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: How would you verify this (for example, make ci plus one focused test)?
+      placeholder: "make ci passes; python3 -m unittest tests.test_harness.HarnessTests.test_deterministic_proof_run -v passes"

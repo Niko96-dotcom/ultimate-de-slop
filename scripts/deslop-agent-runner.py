@@ -125,6 +125,11 @@ def codex_adapter(args: argparse.Namespace, model: str | None) -> AdapterCommand
     command = ["codex", "exec"]
     if model:
         command.extend(["-m", model])
+    effort = os.environ.get("DESLOP_CODEX_REASONING_EFFORT", "").strip().lower()
+    if effort:
+        if effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
+            raise ValueError("DESLOP_CODEX_REASONING_EFFORT must be low, medium, high, xhigh, max, or ultra")
+        command.extend(["-c", f'model_reasoning_effort="{effort}"'])
     command.extend(
         [
             "--cd",
@@ -174,8 +179,13 @@ def child_environment(args: argparse.Namespace, adapter: AdapterCommand) -> dict
         config = json.loads(raw)
         if not isinstance(config, dict):
             raise ValueError("OPENCODE_CONFIG_CONTENT must be an object")
-        permissions = {"*": "deny", "read": "allow", "glob": "allow", "grep": "allow",
-                       "list": "allow", "edit": "deny", "bash": "deny", "task": "deny"}
+        # A trailing wildcard deny can override the explicit read grants when
+        # OpenCode merges global and agent rules. Deny concrete side-effecting
+        # tools instead so reviewers can actually inspect the repository.
+        permissions = {"read": "allow", "glob": "allow", "grep": "allow", "list": "allow",
+                       "edit": "deny", "bash": "deny", "task": "deny", "skill": "deny",
+                       "webfetch": "deny", "websearch": "deny", "lsp": "deny",
+                       "todowrite": "deny", "question": "deny"}
         config["permission"] = permissions
         agents = config.setdefault("agent", {})
         role = agents.setdefault(role_agent(args.kind), {})
@@ -384,6 +394,40 @@ def copy_raw_to_last_message(raw_output: Path, last_message: Path, harness: str)
     write_text(last_message, text)
 
 
+def opencode_review_source_reads(raw_output: Path, root: Path, partition: str,
+                                 prompt: Path) -> int:
+    """Count completed source-file reads in the requested review scope."""
+    scope = (root / partition).resolve()
+    count = 0
+    for line in raw_output.read_text(errors="ignore").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "tool_use":
+            continue
+        part = event.get("part")
+        if not isinstance(part, dict) or part.get("tool") != "read":
+            continue
+        state = part.get("state")
+        if not isinstance(state, dict) or state.get("status") != "completed":
+            continue
+        tool_input = state.get("input")
+        path_text = tool_input.get("filePath") if isinstance(tool_input, dict) else None
+        if not isinstance(path_text, str) or not path_text:
+            continue
+        path = Path(path_text).resolve()
+        if (path == prompt.resolve() or not path.is_relative_to(root)
+                or not path.is_relative_to(scope)):
+            continue
+        relative = path.relative_to(root)
+        if relative.parts and relative.parts[0] in {".deslop", ".opencode"}:
+            continue
+        if state.get("output"):
+            count += 1
+    return count
+
+
 def base_diagnostic(args: argparse.Namespace, adapter: AdapterCommand) -> dict[str, Any]:
     return {
         "add_dirs": args.add_dir,
@@ -421,6 +465,16 @@ def run_process(args: argparse.Namespace, adapter: AdapterCommand, diagnostic: d
     from deslop_snapshot import snapshot
     artifacts = {str(p.resolve().relative_to(args.root)) for p in
                  (args.raw_output, args.last_message, args.runner_json) if p.resolve().is_relative_to(args.root)}
+    if adapter.harness == "opencode":
+        # OpenCode's local goals extension writes this provider-owned state on
+        # read-only calls. Keep tracked copies subject to the mutation check.
+        provider_state = ".opencode/goals/state.json"
+        tracked = subprocess.run(
+            ["git", "ls-files", "--cached", "-z", "--", provider_state],
+            cwd=args.root, check=True, stdout=subprocess.PIPE,
+        ).stdout
+        if not tracked:
+            artifacts.add(provider_state)
     def content_snapshot():
         return {p: digest for p, digest in snapshot(args.root).items() if p not in artifacts}
     before_content = content_snapshot() if is_read_only(args.sandbox, args.kind) else None
@@ -523,6 +577,13 @@ def run_process(args: argparse.Namespace, adapter: AdapterCommand, diagnostic: d
         diagnostic["unauthorized_control_paths"] = [str(p) for p in changed_control]
     if before_content is not None and content_snapshot() != before_content:
         status, exit_code = "read_only_mutation", 1
+    if (adapter.harness == "opencode" and args.kind in {"review", "reviewer"}
+            and status == "completed" and not exit_code):
+        reads = opencode_review_source_reads(args.raw_output, args.root,
+                                             args.review_partition or ".", args.prompt)
+        diagnostic["review_source_reads"] = reads
+        if reads == 0:
+            status, exit_code = "review_uninspected", 1
     copy_raw_to_last_message(args.raw_output, args.last_message, adapter.harness)
     diagnostic.update(
         {
@@ -547,6 +608,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--schema", type=Path, required=True)
     parser.add_argument("--sandbox", required=True, choices=["read-only", "workspace-write", "danger-full-access"])
     parser.add_argument("--kind", default="agent")
+    parser.add_argument("--review-partition", default="")
     parser.add_argument("--harness")
     parser.add_argument("--permission-mode")
     parser.add_argument("--model")

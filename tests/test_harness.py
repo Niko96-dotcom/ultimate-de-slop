@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -412,6 +413,43 @@ print(text)
             self.assertEqual(finding["status"], "blocked")
             self.assertIn("no changed files", str(finding.get("block_reason", "")))
 
+    def test_fix_normalizes_reported_preexisting_dirty_file_on_retry(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
+            (root / "tests").mkdir()
+            (root / "tests" / "test_sample.py").write_text("assert True\n")
+            run(["git", "add", "sample.py", "tests/test_sample.py"], cwd=root, check=True)
+            run(["git", "commit", "-m", "initial"], cwd=root, check=True)
+            (root / "sample.py").write_text("value = 2\n")
+            write_findings(root, minimal_finding("DSL-000001"))
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "codex", """#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+Path('tests/test_sample.py').write_text('assert 2 == 2\\n')
+payload = {"finding_id": "DSL-000001", "summary": "added regression",
+           "changed_files": ["sample.py", "tests/test_sample.py"],
+           "checks_run": [], "risks": [], "status": "fixed"}
+text = json.dumps(payload)
+if '--output-last-message' in sys.argv:
+    Path(sys.argv[sys.argv.index('--output-last-message') + 1]).write_text(text + '\\n')
+print(text)
+""")
+            result = run(
+                [str(SCRIPT_DIR / "deslop-fix.sh"), "--allow-dirty", "DSL-000001"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(read_finding(root, "DSL-000001")["status"], "fixed_unverified")
+            fix = read_finding(root, "DSL-000001")["last_fix"]
+            self.assertEqual(fix["changed_files"], ["tests/test_sample.py"])
+            self.assertEqual(fix["normalized_preexisting_dirty_files"], ["sample.py"])
+
     def test_codex_runner_records_timeout(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
@@ -462,6 +500,7 @@ print(text)
     def test_agent_runner_constructs_opencode_command(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
             prompt = root / "prompt.txt"
             prompt.write_text("Return JSON.\n")
             raw = root / "raw.txt"
@@ -475,8 +514,12 @@ print(text)
                 """#!/usr/bin/env python3
 import json
 import sys
+from pathlib import Path
 
 payload = {"ok": True, "argv": sys.argv[1:], "stdin": sys.stdin.read()}
+print(json.dumps({"type": "tool_use", "part": {"tool": "read", "state": {
+    "status": "completed", "input": {"filePath": str(Path.cwd() / "sample.py")},
+    "output": "value = 1"}}}))
 print(json.dumps(payload))
 """,
             )
@@ -526,6 +569,7 @@ print(json.dumps(payload))
     def test_agent_runner_extracts_opencode_text_events_to_last_message(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
+            (root / "sample.py").write_text("value = 1\n")
             prompt = root / "prompt.txt"
             prompt.write_text("Return JSON.\n")
             raw = root / "raw.txt"
@@ -544,8 +588,12 @@ print(json.dumps(payload))
             fake_opencode.write_text(
                 f"""#!/usr/bin/env python3
 import json
+from pathlib import Path
 
 print(json.dumps({{"type": "step_start", "part": {{"type": "step-start"}}}}))
+print(json.dumps({{"type": "tool_use", "part": {{"tool": "read", "state": {{
+    "status": "completed", "input": {{"filePath": str(Path.cwd() / "sample.py")}},
+    "output": "value = 1"}}}}}}))
 print(json.dumps({{"type": "text", "part": {{"type": "text", "text": {json.dumps(json.dumps(payload))}}}}}))
 print(json.dumps({{"type": "step_finish", "part": {{"type": "step-finish"}}}}))
 """
@@ -580,6 +628,104 @@ print(json.dumps({{"type": "step_finish", "part": {{"type": "step-finish"}}}}))
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn('"type": "text"', raw.read_text())
             self.assertEqual(json.loads(last.read_text()), payload)
+
+    def test_opencode_runtime_goal_file_is_not_a_read_only_source_mutation(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            prompt = root / "prompt.txt"
+            prompt.write_text("Return JSON.\n")
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "opencode", """#!/usr/bin/env python3
+from pathlib import Path
+import os
+
+root = Path.cwd()
+state = root / '.opencode/goals/state.json'
+state.parent.mkdir(parents=True, exist_ok=True)
+state.write_text('{"version": 1, "goals": []}\\n')
+if os.environ.get('MUTATE_SOURCE') == '1':
+    (root / 'source.py').write_text('changed\\n')
+print('{"type":"tool_use","part":{"tool":"read","state":{"status":"completed","input":{"filePath":"' + str(root / 'source.py') + '"},"output":"source"}}}')
+print('{"type":"text","part":{"type":"text","text":"{}"}}')
+""")
+            (root / "source.py").write_text("original\n")
+            run(["git", "add", "source.py"], cwd=root, check=True)
+            run(["git", "commit", "-m", "source"], cwd=root, check=True)
+
+            for mutate, expected in ((False, 0), (True, 1)):
+                with self.subTest(mutate=mutate):
+                    run_dir = root / f"run-{mutate}"
+                    run_dir.mkdir()
+                    result = run(
+                        [sys.executable, str(SCRIPT_DIR / "deslop-agent-runner.py"),
+                         "--root", str(root), "--prompt", str(prompt),
+                         "--raw-output", str(run_dir / "raw.txt"),
+                         "--last-message", str(run_dir / "last.txt"),
+                         "--runner-json", str(run_dir / "runner.json"),
+                         "--schema", str(SKILL_DIR / "references" / "review.schema.json"),
+                         "--sandbox", "read-only", "--kind", "review"],
+                        cwd=root,
+                        env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                             "DESLOP_HARNESS": "opencode", "MUTATE_SOURCE": "1" if mutate else "0"},
+                    )
+                    self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
+                    status = json.loads((run_dir / "runner.json").read_text())["status"]
+                    self.assertEqual(status, "read_only_mutation" if mutate else "completed")
+
+            provider_state = root / ".opencode" / "goals" / "state.json"
+            provider_state.write_text("tracked original\n")
+            run(["git", "add", ".opencode/goals/state.json"], cwd=root, check=True)
+            run(["git", "commit", "-m", "track provider state"], cwd=root, check=True)
+            run_dir = root / "run-tracked"
+            run_dir.mkdir()
+            tracked_result = run(
+                [sys.executable, str(SCRIPT_DIR / "deslop-agent-runner.py"),
+                 "--root", str(root), "--prompt", str(prompt),
+                 "--raw-output", str(run_dir / "raw.txt"),
+                 "--last-message", str(run_dir / "last.txt"),
+                 "--runner-json", str(run_dir / "runner.json"),
+                 "--schema", str(SKILL_DIR / "references" / "review.schema.json"),
+                 "--sandbox", "read-only", "--kind", "review"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                     "DESLOP_HARNESS": "opencode", "MUTATE_SOURCE": "0"},
+            )
+            self.assertEqual(tracked_result.returncode, 1)
+            self.assertEqual(json.loads((run_dir / "runner.json").read_text())["status"],
+                             "read_only_mutation")
+
+    def test_opencode_review_without_source_read_cannot_prove_clean(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            (root / "source.py").write_text("value = 1\n")
+            prompt = root / "prompt.txt"
+            prompt.write_text("Review source.py.\n")
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            write_executable(fake_bin / "opencode", """#!/usr/bin/env python3
+import json
+print(json.dumps({"type": "text", "part": {"type": "text", "text":
+    '{"repo_summary":"looks clean","review_wave_id":"wave-test","partitions_reviewed":["."],"findings":[]}'}}))
+""")
+            runner_json = root / "runner.json"
+            result = run(
+                [sys.executable, str(SCRIPT_DIR / "deslop-agent-runner.py"),
+                 "--root", str(root), "--prompt", str(prompt),
+                 "--raw-output", str(root / "raw.txt"),
+                 "--last-message", str(root / "last.txt"),
+                 "--runner-json", str(runner_json),
+                 "--schema", str(SKILL_DIR / "references" / "review.schema.json"),
+                 "--sandbox", "read-only", "--kind", "review",
+                 "--review-partition", "."],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                     "DESLOP_HARNESS": "opencode"},
+            )
+            self.assertEqual(result.returncode, 1)
+            diagnostic = json.loads(runner_json.read_text())
+            self.assertEqual(diagnostic["status"], "review_uninspected")
+            self.assertEqual(diagnostic["review_source_reads"], 0)
 
     def test_agent_runner_extracts_pi_turn_end_text_to_last_message(self) -> None:
         tempdir, root = self.make_repo()
@@ -1336,6 +1482,7 @@ print(json.dumps({"argv": sys.argv[1:]}))
                     "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
                     "DESLOP_HARNESS": "claude",
                     "DESLOP_CODEX_MODEL": "legacy-model",
+                    "DESLOP_CODEX_REASONING_EFFORT": "medium",
                 },
             )
 
@@ -1344,6 +1491,7 @@ print(json.dumps({"argv": sys.argv[1:]}))
             command = diagnostics["command"]
             self.assertEqual(diagnostics["harness"], "codex")
             self.assertEqual(command[:4], ["codex", "exec", "-m", "legacy-model"])
+            self.assertIn('model_reasoning_effort="medium"', command)
             self.assertIn("--output-schema", command)
             self.assertIn("--output-last-message", command)
             self.assertIn("--add-dir", command)
@@ -2381,6 +2529,10 @@ print(text)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads(result.stdout)
             self.assertTrue(report["ready"])
+            self.assertEqual(
+                {item["code"]: item["level"] for item in report["checks"]}["model_compatibility"],
+                "warning",
+            )
 
     def test_verify_rejects_pass_without_test_file_changes(self) -> None:
         tempdir, root = self.make_repo()
@@ -2394,6 +2546,9 @@ print(text)
                 "changed_files": ["sample.py"],
             }
             write_findings(root, finding)
+            checks = json.loads(checks_path.read_text())
+            checks["results"][0]["command"] = "python3 -m unittest discover -s tests -v"
+            checks_path.write_text(json.dumps(checks) + "\n")
             fake_bin = root / "fake-bin"
             write_fake_codex_verify(
                 fake_bin,
@@ -2401,7 +2556,7 @@ print(text)
                     "finding_id": "DSL-000001",
                     "verdict": "PASS",
                     "confidence": 0.9,
-                    "evidence": ["validator is shared"],
+                    "evidence": ["Existing tests/test_sample.py passed in unittest, but no new test was added"],
                     "concerns": [],
                     "required_follow_up": [],
                 },
@@ -2414,8 +2569,45 @@ print(text)
             )
 
             self.assertNotEqual(result.returncode, 0, result.stdout)
-            self.assertIn("behavioral coverage", result.stderr)
+            self.assertIn("explicitly require a new or updated test", result.stderr)
             self.assertIn("test", result.stderr.lower())
+
+    def test_verify_accepts_named_existing_coverage_without_test_delta(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            checks_path = prepare_verify_fixture(root)
+            finding = read_finding(root, "DSL-000001")
+            finding["acceptance_criteria"] = [
+                "Existing tests/test_sample.py coverage passes unchanged for the corrected behavior"
+            ]
+            finding["expected_checks"] = ["python3 -m unittest discover -s tests -v"]
+            write_findings(root, finding)
+            checks = json.loads(checks_path.read_text())
+            checks["results"][0]["command"] = "python3 -m unittest discover -s tests -v"
+            checks_path.write_text(json.dumps(checks) + "\n")
+            fake_bin = root / "fake-bin"
+            write_fake_codex_verify(
+                fake_bin,
+                {
+                    "finding_id": "DSL-000001",
+                    "verdict": "PASS",
+                    "confidence": 0.9,
+                    "evidence": ["Existing tests/test_sample.py passed in the recorded unittest check"],
+                    "concerns": [],
+                    "required_follow_up": [],
+                },
+            )
+
+            result = run(
+                [str(SCRIPT_DIR / "deslop-verify.sh"), "--checks-json", str(checks_path), "DSL-000001"],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            prompt = latest_run_file(root, "verify", "DSL-000001", "prompt.txt").read_text()
+            self.assertIn("A pre-existing test is sufficient", prompt)
+            self.assertIn("name that test and its passing check result", prompt)
 
     def test_status_priority_note_when_p2_remain(self) -> None:
         tempdir, root = self.make_repo()
@@ -2642,6 +2834,14 @@ printf '%s\\n' "$payload"
                 timeouts = resolve_agent_timeouts(root)
             self.assertEqual(timeouts["idle_timeout_seconds"], 42.0)
 
+            with patch.dict(os.environ, {
+                "DESLOP_TIMEOUT_SECONDS": "NaN",
+                "DESLOP_IDLE_TIMEOUT_SECONDS": "Infinity",
+            }, clear=False):
+                invalid = resolve_agent_timeouts(root, harness="codex", kind="review")
+            self.assertEqual(invalid["timeout_seconds"], 5400.0)
+            self.assertEqual(invalid["idle_timeout_seconds"], 1200.0)
+
     def test_review_partition_scopes_prompt(self) -> None:
         tempdir, root = self.make_repo()
         with tempdir:
@@ -2748,8 +2948,9 @@ exit 99
             fake_bin.mkdir(parents=True)
             write_executable(
                 fake_bin / "codex",
-                """#!/usr/bin/env bash
+              """#!/usr/bin/env bash
 set -euo pipefail
+printf '%s' "${CODEX_HOME:?}" > "$CODEX_HOME/observed-cli-home"
 if [ "${1:-}" = plugin ]; then
   case "${2:-}" in
     marketplace)
@@ -2784,8 +2985,80 @@ exit 0
                 / "ultimate-de-slop.md"
             )
             self.assertTrue(plugin_command.exists())
+            self.assertEqual((home / ".codex" / "observed-cli-home").read_text(), str((home / ".codex").resolve()))
+            marketplace_manifest = home / ".codex" / "marketplaces" / "ultimate-de-slop" / ".agents" / "plugins" / "marketplace.json"
+            self.assertTrue(marketplace_manifest.exists())
+            self.assertEqual(json.loads(marketplace_manifest.read_text())["name"], "ultimate-de-slop")
             self.assertFalse((home / ".agents" / "commands" / "ultimate-de-slop.md").exists())
+            target = home / ".codex" / "skills" / "ultimate-de-slop"
+            self.assertEqual(list(target.rglob("SKILL.md")), [target / "SKILL.md"])
             self.assertIn("Codex slash command: /ultimate-de-slop", result.stdout)
+
+            # Upgrading a version-2 install must remove the nested Cursor entry.
+            marker = json.loads((target / ".ultimate-de-slop-install.json").read_text())
+            marker.pop("files")
+            marker["installer_version"] = 2
+            (target / ".ultimate-de-slop-install.json").write_text(json.dumps(marker))
+            legacy = target / "templates" / "cursor" / "cloud" / "SKILL.md"
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            legacy.write_text("user-edited cloud entry\n")
+            upgraded = run(
+                [str(SCRIPT_DIR / "install" / "install-codex.sh"), "--home", str(home)],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+            self.assertEqual(upgraded.returncode, 0, upgraded.stderr + upgraded.stdout)
+            self.assertEqual(list(target.rglob("SKILL.md")), [target / "SKILL.md"])
+            backups = list((home / ".codex" / "skill-backups").rglob("SKILL.md"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(), "user-edited cloud entry\n")
+
+            # Version-3 manifests clean up removed package files on later installs.
+            obsolete = target / "obsolete.txt"
+            obsolete.write_text("old package file\n")
+            marker = json.loads((target / ".ultimate-de-slop-install.json").read_text())
+            marker["files"]["obsolete.txt"] = hashlib.sha256(obsolete.read_bytes()).hexdigest()
+            (target / ".ultimate-de-slop-install.json").write_text(json.dumps(marker))
+            refreshed = run(
+                [str(SCRIPT_DIR / "install" / "install-codex.sh"), "--home", str(home)],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+            self.assertEqual(refreshed.returncode, 0, refreshed.stderr + refreshed.stdout)
+            self.assertFalse(obsolete.exists())
+
+    def test_codex_installer_reports_plugin_registration_failure(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            home = root / "home"
+            fake_bin = home / "bin"
+            fake_bin.mkdir(parents=True)
+            write_executable(fake_bin / "codex", "#!/bin/sh\necho 'invalid marketplace' >&2\nexit 2\n")
+            result = run(
+                [str(SCRIPT_DIR / "install" / "install-codex.sh"), "--home", str(home)],
+                cwd=root,
+                env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+            self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+            self.assertIn("codex plugin marketplace registration failed", result.stdout)
+            self.assertNotIn("Codex slash command:", result.stdout)
+
+    def test_installer_backs_up_unmanaged_skill_outside_discovery(self) -> None:
+        tempdir, root = self.make_repo()
+        with tempdir:
+            home = root / "home"
+            target = home / ".hermes" / "skills" / "software-development" / "ultimate-de-slop"
+            target.mkdir(parents=True)
+            (target / "SKILL.md").write_text("original skill\n")
+            result = run(
+                [str(SCRIPT_DIR / "install" / "install-hermes.sh"), "--home", str(home)],
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(list((home / ".hermes" / "skills").rglob("SKILL.md")), [target / "SKILL.md"])
+            backups = list((home / ".hermes" / "skill-backups").rglob("SKILL.md"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(), "original skill\n")
 
     def test_write_findings_jsonl_keeps_original_on_interrupted_replace(self) -> None:
         tempdir = tempfile.TemporaryDirectory()

@@ -1,0 +1,20 @@
+{
+  "name": "ultimate-de-slop",
+  "interface": {
+    "displayName": "Ultimate De-Slop"
+  },
+  "plugins": [
+    {
+      "name": "ultimate-de-slop",
+      "source": {
+        "source": "local",
+        "path": "./plugins/ultimate-de-slop"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
